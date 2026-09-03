@@ -12,7 +12,7 @@ import cv2
 from .config import AppConfig, load_config, save_config
 from .hotkeys import GlobalHotkeys, HotkeyRegistrationError
 from .runner import AutomationRunner
-from .windows import WindowsOnlyError, list_visible_windows
+from .windows import WindowsOnlyError, activate_window, find_window, list_visible_windows
 
 
 class GameAssistApp:
@@ -53,6 +53,7 @@ class GameAssistApp:
         self.process_id: int | None = self.config.window.process_id
         self.threshold = tk.StringVar(value=str(self.config.rules.heal_below_percent))
         self.heal_key = tk.StringVar(value=self.config.rules.heal_key)
+        self.recognition_interval = tk.StringVar(value=str(self.config.recognition_interval_ms))
         self.save_debug = tk.BooleanVar(value=self.config.save_debug_frame)
         self.status = tk.StringVar(value="待命 · 请先选择目标窗口")
         self.window_count = tk.StringVar(value="尚未刷新")
@@ -125,7 +126,9 @@ class GameAssistApp:
         ttk.Entry(settings, textvariable=self.threshold, width=7).grid(row=1, column=3, sticky="w", padx=(8, 0))
         ttk.Label(settings, text="治疗按键", style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=(12, 0))
         ttk.Entry(settings, textvariable=self.heal_key, width=8).grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(12, 0))
-        ttk.Checkbutton(settings, text="保存调试截图", variable=self.save_debug).grid(row=2, column=2, columnspan=2, sticky="w", padx=(18, 0), pady=(12, 0))
+        ttk.Label(settings, text="判断间隔 (ms)", style="Muted.TLabel").grid(row=2, column=2, sticky="w", pady=(12, 0))
+        ttk.Entry(settings, textvariable=self.recognition_interval, width=7).grid(row=2, column=3, sticky="w", padx=(8, 0), pady=(12, 0))
+        ttk.Checkbutton(settings, text="保存调试截图", variable=self.save_debug).grid(row=3, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
         actions = ttk.Frame(shell)
         actions.pack(fill="x", pady=(18, 0))
@@ -160,9 +163,13 @@ class GameAssistApp:
         key = self.heal_key.get().strip().upper()
         if not key:
             raise ValueError("请填写治疗按键")
+        recognition_interval = int(self.recognition_interval.get())
+        if recognition_interval < 50:
+            raise ValueError("判断间隔不能小于 50 毫秒")
         return replace(
             self.config,
             window=replace(self.config.window, title_contains=title, process_id=self.process_id),
+            recognition_interval_ms=recognition_interval,
             save_debug_frame=self.save_debug.get(),
             rules=replace(self.config.rules, heal_below_percent=threshold, heal_key=key),
         )
@@ -184,10 +191,17 @@ class GameAssistApp:
             return
         if self.runner.running:
             self.runner.stop()
+        hwnd = find_window(self.config.window.title_contains, self.config.window.process_id)
+        if hwnd is None:
+            messagebox.showerror("无法启动", "找不到已选择的目标窗口，请刷新窗口列表后重新选择。", parent=self.root)
+            return
+        activated = not self.config.window.require_foreground or activate_window(hwnd)
         self.runner = AutomationRunner(self.config)
         self.runner.start()
-        self.status.set("运行中 · 目标窗口必须保持前台")
-        self._refresh_status()
+        if activated:
+            self.status.set("运行中 · 失焦时暂停，目标窗口回到前台后自动继续")
+        else:
+            self.status.set("已暂停 · 请手动将目标窗口切回前台")
 
     def _stop(self) -> None:
         self.runner.stop()
@@ -197,7 +211,9 @@ class GameAssistApp:
     def _refresh_status(self) -> None:
         if self.runner.running:
             self.start_button.configure(text="运行中")
-            if self.runner.last_reading:
+            if self.runner.paused_for_focus:
+                self.status.set("已暂停 · 请将目标窗口切回前台，程序会自动继续")
+            elif self.runner.last_reading:
                 hp, confidence = self.runner.last_reading
                 self.status.set(f"运行中 · HP {hp:.1f}% · 置信度 {confidence:.2f} · {self.runner.last_event}")
         else:
@@ -209,6 +225,11 @@ class GameAssistApp:
         if self.preview_window is not None and self.preview_window.winfo_exists():
             self.preview_window.deiconify()
             self.preview_window.lift()
+            return
+        try:
+            self.config = self._updated_config()
+        except ValueError as error:
+            messagebox.showerror("无法开始预览", str(error), parent=self.root)
             return
         # Calibration is intentionally capture-only: the preview window may take focus,
         # so it must never emit input into the wrong foreground application.
@@ -255,6 +276,7 @@ class GameAssistApp:
             self.preview_scale = scale
             self.preview_canvas.delete("frame")
             self.preview_canvas.create_image(0, 0, image=self.preview_photo, anchor="nw", tags="frame")
+            self.preview_canvas.tag_lower("frame")
             self.preview_canvas.configure(scrollregion=(0, 0, image.shape[1], image.shape[0]))
 
     def _preview_press(self, event: tk.Event) -> None:
@@ -285,10 +307,12 @@ class GameAssistApp:
             lower = tuple(max(0, int(value) - spread) for value, spread in zip(hsv, (10, 80, 80)))
             upper = tuple(min(limit, int(value) + spread) for value, limit, spread in zip(hsv, (179, 255, 255), (10, 80, 80)))
             self.config = replace(self.config, health_bar=replace(self.config.health_bar, hsv_lower=lower, hsv_upper=upper, hsv_ranges=()))
+            self.runner.update_health_bar(self.config.health_bar)
             self.status.set(f"已取色 HSV {tuple(int(v) for v in hsv)}；点击“保存配置”生效")
             return
         roi = (max(0, x1), max(0, y1), x2 - x1, y2 - y1)
         self.config = replace(self.config, health_bar=replace(self.config.health_bar, roi=roi))
+        self.runner.update_health_bar(self.config.health_bar)
         self.status.set(f"已框选 ROI {roi}；点击“保存配置”生效")
 
     def _close(self) -> None:

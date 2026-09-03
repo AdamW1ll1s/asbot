@@ -40,6 +40,7 @@ class AppConfig:
     toggle_hotkey: str
     emergency_stop_hotkey: str
     poll_interval_ms: int
+    recognition_interval_ms: int
     save_debug_frame: bool
     health_bar: HealthBarConfig
     rules: RuleConfig
@@ -79,6 +80,7 @@ def load_config(path: str | Path) -> AppConfig:
         toggle_hotkey=str(_required(hotkeys, "toggle")).upper(),
         emergency_stop_hotkey=str(_required(hotkeys, "emergency_stop")).upper(),
         poll_interval_ms=int(_required(capture, "poll_interval_ms")),
+        recognition_interval_ms=int(capture.get("recognition_interval_ms", 500)),
         save_debug_frame=bool(capture.get("save_debug_frame", False)),
         health_bar=HealthBarConfig(
             roi=_as_tuple(_required(health, "roi"), 4, "health_bar.roi"),
@@ -94,6 +96,8 @@ def load_config(path: str | Path) -> AppConfig:
     )
     if config.poll_interval_ms < 20:
         raise ValueError("capture.poll_interval_ms must be at least 20")
+    if config.recognition_interval_ms < 50:
+        raise ValueError("capture.recognition_interval_ms must be at least 50")
     if not 0 < config.health_bar.column_coverage <= 1:
         raise ValueError("health_bar.column_coverage must be in (0, 1]")
     if config.health_bar.consecutive_frames < 1:
@@ -121,6 +125,7 @@ def save_config(path: str | Path, config: AppConfig) -> None:
         },
         "capture": {
             "poll_interval_ms": config.poll_interval_ms,
+            "recognition_interval_ms": config.recognition_interval_ms,
             "save_debug_frame": config.save_debug_frame,
         },
         "health_bar": {

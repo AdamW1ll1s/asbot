@@ -25,9 +25,11 @@ python -m game_assist.main --config config\profile.yaml
 
 先将 `config/profile.yaml` 中的 `window.title_contains` 改为目标窗口标题的一部分，再根据实际 UI 调整 `health_bar.roi`。坐标以**窗口客户区左上角**为原点，单位为像素。
 
-将 `save_debug_frame` 暂时设为 `true`，启动后会写出 `debug-frame.png`；用它测量血条区域并通过 OpenCV HSV 取色工具调整 `hsv_lower` / `hsv_upper`。完成后关闭该选项。
+将 `save_debug_frame` 暂时设为 `true`，启动后会按秒更新 `debug/latest-frame.png` 和 `debug/latest-overlay.png`；也可以直接使用实时预览框选 ROI、单击血条取色。完成后关闭该选项。
 
-运行后：F8 开始/停止；F12 立即停止。运行期间只要目标窗口失去前台焦点，程序会安全停止。
+运行后：F8 开始/停止；F12 立即停止。目标窗口失去前台焦点时，程序会释放按键并暂停；切回目标窗口后自动继续。
+
+`capture.recognition_interval_ms` 控制截图与识别的间隔，默认 `500` 毫秒。桌面界面中的“判断间隔”可直接修改该值；静态截图校准时可适当调大到 `1000` 毫秒。
 
 ## 测试与打包
 

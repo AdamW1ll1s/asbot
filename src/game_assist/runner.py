@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import logging
 from pathlib import Path
 import threading
@@ -9,7 +10,7 @@ import cv2
 import mss
 import numpy as np
 
-from .config import AppConfig
+from .config import AppConfig, HealthBarConfig
 from .health import HealthBarDetector
 from .input import KeyboardExecutor
 from .windows import activate_window, client_rect, find_window, is_foreground
@@ -30,7 +31,9 @@ class AutomationRunner:
         self._reading_streak = 0
         self.last_reading: tuple[float, float] | None = None
         self.last_event = "Waiting"
+        self.paused_for_focus = False
         self._last_debug_at = 0.0
+        self._last_recognition_at = 0.0
         self._preview_lock = threading.Lock()
         self._latest_preview: np.ndarray | None = None
         self._latest_raw: np.ndarray | None = None
@@ -52,6 +55,14 @@ class AutomationRunner:
         self._keyboard.release_all()
         LOG.info("Automation stopped")
 
+    def update_health_bar(self, config: HealthBarConfig) -> None:
+        """Apply calibration changes to a running preview."""
+        self.config = replace(self.config, health_bar=config)
+        self._detector = HealthBarDetector(config)
+        self._reading_streak = 0
+        self.last_reading = None
+        self._last_recognition_at = 0.0
+
     def toggle(self) -> None:
         self.stop() if self.running else self.start()
 
@@ -65,19 +76,37 @@ class AutomationRunner:
             # control panel focus. Restore focus to the selected target before
             # enforcing the foreground-only safety rule.
             if not self.preview_only and self.config.window.require_foreground:
-                if not activate_window(hwnd) or not is_foreground(hwnd):
-                    LOG.warning("Could not activate target window; stopping before any input")
-                    return
+                activate_window(hwnd)
+            focus_paused = False
             with mss.mss() as screen:
                 while not self._cancel.is_set():
                     if not self.preview_only and self.config.window.require_foreground and not is_foreground(hwnd):
-                        LOG.warning("Target window lost focus; stopping")
-                        return
+                        if not focus_paused:
+                            focus_paused = True
+                            self.paused_for_focus = True
+                            self._reading_streak = 0
+                            self._keyboard.release_all()
+                            self.last_event = "已暂停 · 等待目标窗口回到前台"
+                            LOG.warning("Target window lost focus; automation paused")
+                        self._cancel.wait(min(self.config.poll_interval_ms / 1000, 0.25))
+                        continue
+                    if focus_paused:
+                        focus_paused = False
+                        self.paused_for_focus = False
+                        self.last_event = "目标窗口已恢复 · 继续运行"
+                        LOG.info("Target window regained focus; automation resumed")
+                    now = time.monotonic()
+                    recognition_interval = self.config.recognition_interval_ms / 1000
+                    until_next_recognition = recognition_interval - (now - self._last_recognition_at)
+                    if until_next_recognition > 0:
+                        self._cancel.wait(min(self.config.poll_interval_ms / 1000, until_next_recognition))
+                        continue
                     rect = client_rect(hwnd)
                     if rect is None:
                         LOG.warning("Target client area is unavailable; stopping")
                         return
                     client_bgr = self._capture(screen, rect.left, rect.top, rect.width, rect.height)
+                    self._last_recognition_at = now
                     reading = self._detector.detect(client_bgr)
                     if reading is not None:
                         self.last_reading = (reading.percent, reading.confidence)
@@ -91,10 +120,10 @@ class AutomationRunner:
                         self._latest_preview = self._annotate_frame(client_bgr, reading)
                         self._latest_raw = client_bgr.copy()
                     self._write_debug(client_bgr, reading)
-                    self._cancel.wait(self.config.poll_interval_ms / 1000)
         except Exception:
             LOG.exception("Automation failed safely")
         finally:
+            self.paused_for_focus = False
             self._keyboard.release_all()
             self._cancel.set()
 
@@ -148,7 +177,4 @@ class AutomationRunner:
 
     def _capture(self, screen: mss.mss, left: int, top: int, width: int, height: int) -> np.ndarray:
         raw = np.asarray(screen.grab({"left": left, "top": top, "width": width, "height": height}))
-        bgr = cv2.cvtColor(raw, cv2.COLOR_BGRA2BGR)
-        if self.config.save_debug_frame:
-            cv2.imwrite(str(Path("debug-frame.png")), bgr)
-        return bgr
+        return cv2.cvtColor(raw, cv2.COLOR_BGRA2BGR)

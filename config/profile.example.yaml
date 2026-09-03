@@ -11,7 +11,9 @@ hotkeys:
   emergency_stop: "F12"
 
 capture:
+  # Foreground/window checks remain responsive while capture and recognition are throttled.
   poll_interval_ms: 100
+  recognition_interval_ms: 500
   save_debug_frame: false
 
 health_bar:
