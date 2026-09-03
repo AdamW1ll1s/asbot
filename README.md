@@ -31,6 +31,8 @@ python -m game_assist.main --config config\profile.yaml
 
 `capture.recognition_interval_ms` 控制截图与识别的间隔，默认 `500` 毫秒。桌面界面中的“判断间隔”可直接修改该值；静态截图校准时可适当调大到 `1000` 毫秒。
 
+治疗规则仅在 `HP < 治疗阈值` 时触发；HP 与阈值相等时不会触发。每次触发都会在界面的“触发日志”中显示，并追加写入 `logs/actions.log`，内容包括 HP、阈值、置信度、规则名、实际按键和执行结果。
+
 ## 测试与打包
 
 ```powershell

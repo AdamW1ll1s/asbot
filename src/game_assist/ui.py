@@ -12,7 +12,7 @@ import numpy as np
 
 from .config import AppConfig, load_config, save_config
 from .hotkeys import GlobalHotkeys, HotkeyRegistrationError
-from .runner import AutomationRunner
+from .runner import ACTION_LOG_PATH, AutomationRunner
 from .windows import WindowsOnlyError, activate_window, find_window, list_visible_windows
 
 
@@ -70,6 +70,9 @@ class GameAssistApp:
         self.preview_reading = tk.StringVar(value="等待首次识别")
         self.preview_start: tuple[int, int] | None = None
         self.preview_rect: int | None = None
+        self.action_log_window: tk.Toplevel | None = None
+        self.action_log_text: tk.Text | None = None
+        self.action_log_signature: tuple[int, int] | None = None
         self._build()
         self.root.protocol("WM_DELETE_WINDOW", self._close)
 
@@ -143,6 +146,7 @@ class GameAssistApp:
         actions.pack(fill="x", pady=(18, 0))
         ttk.Button(actions, text="保存配置", style="Secondary.TButton", command=self.save_settings).pack(side="left")
         ttk.Button(actions, text="实时识别预览", style="Secondary.TButton", command=self.show_preview).pack(side="left", padx=(10, 0))
+        ttk.Button(actions, text="触发日志", style="Secondary.TButton", command=self.show_action_log).pack(side="left", padx=(10, 0))
         ttk.Button(actions, text="停止", style="Danger.TButton", command=self._stop).pack(side="right")
         self.start_button = ttk.Button(actions, text="开始自动化", style="Accent.TButton", command=self._start)
         self.start_button.pack(side="right", padx=(0, 10))
@@ -223,18 +227,106 @@ class GameAssistApp:
                 self.start_button.configure(text="开始自动化")
                 if self.runner.last_reading:
                     hp, confidence = self.runner.last_reading
-                    self.preview_reading.set(f"HP {hp:.1f}% · 置信度 {confidence:.2f}")
+                    relation = "<" if hp < self.config.rules.heal_below_percent else "≥"
+                    self.preview_reading.set(
+                        f"HP {hp:.1f}% {relation} 阈值 {self.config.rules.heal_below_percent:.1f}%"
+                        f" · 置信度 {confidence:.2f}"
+                    )
             else:
                 self.start_button.configure(text="运行中")
             if not self.runner.preview_only and self.runner.paused_for_focus:
                 self.status.set("已暂停 · 请将目标窗口切回前台，程序会自动继续")
             elif not self.runner.preview_only and self.runner.last_reading:
                 hp, confidence = self.runner.last_reading
-                self.status.set(f"运行中 · HP {hp:.1f}% · 置信度 {confidence:.2f} · {self.runner.last_event}")
+                relation = "<" if hp < self.config.rules.heal_below_percent else "≥"
+                self.status.set(
+                    f"运行中 · HP {hp:.1f}% {relation} 阈值 {self.config.rules.heal_below_percent:.1f}%"
+                    f" · 置信度 {confidence:.2f} · {self.runner.last_event}"
+                )
         else:
             self.start_button.configure(text="开始自动化")
         self._refresh_preview()
+        self._refresh_action_log()
         self.root.after(250, self._refresh_status)
+
+    def show_action_log(self) -> None:
+        if self.action_log_window is not None and self.action_log_window.winfo_exists():
+            self.action_log_window.deiconify()
+            self.action_log_window.lift()
+            return
+        window = tk.Toplevel(self.root)
+        window.title("Game Assist · 触发按键日志")
+        window.geometry("900x380")
+        window.minsize(680, 280)
+        window.configure(bg=self.BACKGROUND)
+        ttk.Label(
+            window,
+            text="只有 HP 严格小于阈值、置信度达标、连续帧达标且冷却结束时才会触发。",
+            style="Subtitle.TLabel",
+        ).pack(anchor="w", padx=16, pady=(14, 4))
+        ttk.Label(
+            window,
+            text=f"日志文件：{ACTION_LOG_PATH.resolve()}",
+            style="Subtitle.TLabel",
+        ).pack(anchor="w", padx=16, pady=(0, 10))
+        log_frame = ttk.Frame(window)
+        log_frame.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+        log_frame.columnconfigure(0, weight=1)
+        log_frame.rowconfigure(0, weight=1)
+        text = tk.Text(
+            log_frame,
+            bg="#07101c",
+            fg=self.TEXT,
+            insertbackground=self.TEXT,
+            wrap="none",
+            font=("Consolas", 10),
+            relief="flat",
+            padx=10,
+            pady=10,
+        )
+        vertical = ttk.Scrollbar(log_frame, orient="vertical", command=text.yview)
+        horizontal = ttk.Scrollbar(log_frame, orient="horizontal", command=text.xview)
+        text.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set, state="disabled")
+        text.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
+        self.action_log_window = window
+        self.action_log_text = text
+        self.action_log_signature = None
+        self._refresh_action_log()
+        window.protocol("WM_DELETE_WINDOW", self._close_action_log)
+
+    def _refresh_action_log(self) -> None:
+        if self.action_log_window is None or not self.action_log_window.winfo_exists() or self.action_log_text is None:
+            return
+        try:
+            stat = ACTION_LOG_PATH.stat()
+            signature = (stat.st_mtime_ns, stat.st_size)
+            if signature == self.action_log_signature:
+                return
+            lines = ACTION_LOG_PATH.read_text(encoding="utf-8").splitlines()[-200:]
+            content = "\n".join(lines)
+        except OSError:
+            history = self.runner.action_history()
+            signature = (-1, hash(history))
+            if signature == self.action_log_signature:
+                return
+            content = "\n".join(history)
+        if not content:
+            content = "暂无触发记录。"
+        self.action_log_text.configure(state="normal")
+        self.action_log_text.delete("1.0", "end")
+        self.action_log_text.insert("1.0", content)
+        self.action_log_text.configure(state="disabled")
+        self.action_log_text.see("end")
+        self.action_log_signature = signature
+
+    def _close_action_log(self) -> None:
+        if self.action_log_window is not None:
+            self.action_log_window.destroy()
+        self.action_log_window = None
+        self.action_log_text = None
+        self.action_log_signature = None
 
     def show_preview(self) -> None:
         if self.preview_window is not None and self.preview_window.winfo_exists():
@@ -484,6 +576,7 @@ class GameAssistApp:
         self.runner.stop()
         self.hotkeys.stop()
         self._close_preview()
+        self._close_action_log()
         self.root.destroy()
 
     def run(self) -> int:

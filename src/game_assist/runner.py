@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import replace
 import logging
 from pathlib import Path
@@ -13,10 +14,12 @@ import numpy as np
 from .config import AppConfig, HealthBarConfig
 from .health import HealthBarDetector
 from .input import KeyboardExecutor
+from .rules import should_trigger_health_rule
 from .windows import activate_window, client_rect, find_window, is_foreground
 
 
 LOG = logging.getLogger(__name__)
+ACTION_LOG_PATH = Path("logs/actions.log")
 
 
 class AutomationRunner:
@@ -28,6 +31,8 @@ class AutomationRunner:
         self._keyboard = KeyboardExecutor()
         self._detector = HealthBarDetector(config.health_bar)
         self._last_action_at = 0.0
+        self._action_lock = threading.Lock()
+        self._action_history: deque[str] = deque(maxlen=200)
         self._reading_streak = 0
         self.last_reading: tuple[float, float] | None = None
         self.last_event = "Waiting"
@@ -66,6 +71,10 @@ class AutomationRunner:
 
     def toggle(self) -> None:
         self.stop() if self.running else self.start()
+
+    def action_history(self) -> tuple[str, ...]:
+        with self._action_lock:
+            return tuple(self._action_history)
 
     def _run(self) -> None:
         try:
@@ -131,20 +140,44 @@ class AutomationRunner:
 
     def _apply_health_rule(self, percent: float, confidence: float) -> None:
         for rule in (self.config.rules, *self.config.additional_rules):
-            if confidence < self.config.health_bar.min_confidence or percent >= rule.heal_below_percent:
+            if not should_trigger_health_rule(
+                percent,
+                rule.heal_below_percent,
+                confidence,
+                self.config.health_bar.min_confidence,
+            ):
                 continue
             now = time.monotonic()
             if now - self._last_action_at < rule.cooldown_ms / 1000:
                 continue
             self._last_action_at = now
-            self.last_event = f"{rule.name}: {percent:.1f}% → {rule.heal_key}"
-            LOG.warning("%s", self.last_event)
-            if self.config.save_debug_frame:
-                Path("debug").mkdir(exist_ok=True)
-                with Path("debug/events.log").open("a", encoding="utf-8") as file:
-                    file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {self.last_event}\n")
-            self._keyboard.tap(rule.heal_key, duration_ms=rule.hold_ms, cancelled=self._cancel)
+            trigger = (
+                f"规则 {rule.name} | HP {percent:.1f}% < 阈值 {rule.heal_below_percent:.1f}%"
+                f" | 置信度 {confidence:.2f} | 按键 {rule.heal_key}"
+            )
+            self.last_event = f"准备触发 {rule.heal_key}"
+            LOG.warning("Triggering key: %s", trigger)
+            try:
+                completed = self._keyboard.tap(rule.heal_key, duration_ms=rule.hold_ms, cancelled=self._cancel)
+            except Exception as error:
+                self._record_action(f"{trigger} | 失败：{error}")
+                raise
+            outcome = "已发送" if completed else "已取消或未完成"
+            self.last_event = f"已触发 {rule.heal_key} · HP {percent:.1f}% < {rule.heal_below_percent:.1f}%"
+            self._record_action(f"{trigger} | {outcome}")
             break
+
+    def _record_action(self, event: str) -> None:
+        line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {event}"
+        with self._action_lock:
+            self._action_history.append(line)
+        LOG.warning("Action result: %s", line)
+        try:
+            ACTION_LOG_PATH.parent.mkdir(exist_ok=True)
+            with ACTION_LOG_PATH.open("a", encoding="utf-8") as file:
+                file.write(f"{line}\n")
+        except OSError as error:
+            LOG.warning("Could not write action log %s: %s", ACTION_LOG_PATH, error)
 
     def _write_debug(self, frame: np.ndarray, reading: object) -> None:
         if not self.config.save_debug_frame or time.monotonic() - self._last_debug_at < 1:

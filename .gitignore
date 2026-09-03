@@ -11,6 +11,7 @@ dist/
 config/profile.yaml
 debug-frame.png
 debug/
+logs/
 
 # Local editor settings
 .idea/
