@@ -32,6 +32,7 @@ class INPUT(ctypes.Structure):
 VIRTUAL_KEYS = {
     **{chr(code): code for code in range(ord("0"), ord("9") + 1)},
     **{f"F{key}": 0x6F + key for key in range(1, 25)},
+    "CTRL": 0x11, "SHIFT": 0x10, "ALT": 0x12, "SPACE": 0x20,
 }
 
 
@@ -46,6 +47,20 @@ class KeyboardExecutor:
         self._lock = threading.Lock()
 
     def tap(self, key: str, duration_ms: int, cancelled: threading.Event) -> bool:
+        # Comma separates an action sequence; plus creates a key chord, e.g. CTRL+1,2.
+        if "," in key:
+            return all(self.tap(part.strip(), duration_ms, cancelled) for part in key.split(","))
+        if "+" in key:
+            keys = [self._virtual_key(part.strip()) for part in key.split("+")]
+            if cancelled.is_set():
+                return False
+            for vk in keys:
+                self._send(vk, down=True)
+            try:
+                return not cancelled.wait(duration_ms / 1000)
+            finally:
+                for vk in reversed(keys):
+                    self._send(vk, down=False)
         vk = self._virtual_key(key)
         if cancelled.is_set():
             return False

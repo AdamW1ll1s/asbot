@@ -38,7 +38,7 @@ def _require_windows() -> None:
         raise WindowsOnlyError("This command must run on Windows.")
 
 
-def find_window(title_contains: str) -> int | None:
+def find_window(title_contains: str, process_id: int | None = None) -> int | None:
     _require_windows()
     matches: list[int] = []
     callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
@@ -51,6 +51,10 @@ def find_window(title_contains: str) -> int | None:
             return True
         title = ctypes.create_unicode_buffer(length + 1)
         user32.GetWindowTextW(hwnd, title, len(title))
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if process_id is not None and pid.value != process_id:
+            return True
         if title_contains.casefold() in title.value.casefold():
             matches.append(hwnd)
             return False

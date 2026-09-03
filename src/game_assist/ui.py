@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import base64
 import shutil
 import tkinter as tk
 from tkinter import messagebox, ttk
+
+import cv2
 
 from .config import AppConfig, load_config, save_config
 from .hotkeys import GlobalHotkeys
@@ -47,11 +50,15 @@ class GameAssistApp:
         self._configure_style()
 
         self.window_title = tk.StringVar(value=self.config.window.title_contains)
+        self.process_id: int | None = self.config.window.process_id
         self.threshold = tk.StringVar(value=str(self.config.rules.heal_below_percent))
         self.heal_key = tk.StringVar(value=self.config.rules.heal_key)
         self.save_debug = tk.BooleanVar(value=self.config.save_debug_frame)
         self.status = tk.StringVar(value="待命 · 请先选择目标窗口")
         self.window_count = tk.StringVar(value="尚未刷新")
+        self.preview_window: tk.Toplevel | None = None
+        self.preview_label: tk.Label | None = None
+        self.preview_photo: tk.PhotoImage | None = None
         self._build()
         self.root.protocol("WM_DELETE_WINDOW", self._close)
 
@@ -120,6 +127,7 @@ class GameAssistApp:
         actions = ttk.Frame(shell)
         actions.pack(fill="x", pady=(18, 0))
         ttk.Button(actions, text="保存配置", style="Secondary.TButton", command=self.save_settings).pack(side="left")
+        ttk.Button(actions, text="实时识别预览", style="Secondary.TButton", command=self.show_preview).pack(side="left", padx=(10, 0))
         ttk.Button(actions, text="停止", style="Danger.TButton", command=self._stop).pack(side="right")
         self.start_button = ttk.Button(actions, text="开始自动化", style="Accent.TButton", command=self._start)
         self.start_button.pack(side="right", padx=(0, 10))
@@ -135,7 +143,9 @@ class GameAssistApp:
     def _select_window(self, _: object) -> None:
         selected = self.window_tree.selection()
         if selected:
-            self.window_title.set(str(self.window_tree.item(selected[0], "values")[1]))
+            values = self.window_tree.item(selected[0], "values")
+            self.process_id = int(values[0])
+            self.window_title.set(str(values[1]))
 
     def _updated_config(self) -> AppConfig:
         title = self.window_title.get().strip()
@@ -149,7 +159,7 @@ class GameAssistApp:
             raise ValueError("请填写治疗按键")
         return replace(
             self.config,
-            window=replace(self.config.window, title_contains=title),
+            window=replace(self.config.window, title_contains=title, process_id=self.process_id),
             save_debug_frame=self.save_debug.get(),
             rules=replace(self.config.rules, heal_below_percent=threshold, heal_key=key),
         )
@@ -172,6 +182,7 @@ class GameAssistApp:
         self.runner = AutomationRunner(self.config)
         self.runner.start()
         self.status.set("运行中 · 目标窗口必须保持前台")
+        self.show_preview()
         self._refresh_status()
 
     def _stop(self) -> None:
@@ -182,13 +193,54 @@ class GameAssistApp:
     def _refresh_status(self) -> None:
         if self.runner.running:
             self.start_button.configure(text="运行中")
+            if self.runner.last_reading:
+                hp, confidence = self.runner.last_reading
+                self.status.set(f"运行中 · HP {hp:.1f}% · 置信度 {confidence:.2f} · {self.runner.last_event}")
         else:
             self.start_button.configure(text="开始自动化")
+        self._refresh_preview()
         self.root.after(250, self._refresh_status)
+
+    def show_preview(self) -> None:
+        if self.preview_window is not None and self.preview_window.winfo_exists():
+            self.preview_window.deiconify()
+            self.preview_window.lift()
+            return
+        window = tk.Toplevel(self.root)
+        window.title("Game Assist · 实时识别预览")
+        window.configure(bg=self.BACKGROUND)
+        window.geometry("820x560")
+        ttk.Label(window, text="绿色框：识别可信  ·  橙色框：等待确认或置信度不足", style="Subtitle.TLabel").pack(anchor="w", padx=16, pady=(14, 8))
+        self.preview_label = tk.Label(window, text="等待目标窗口画面…", bg="#07101c", fg=self.MUTED, font=("Segoe UI", 12), compound="center")
+        self.preview_label.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+        self.preview_window = window
+        window.protocol("WM_DELETE_WINDOW", self._close_preview)
+
+    def _close_preview(self) -> None:
+        if self.preview_window is not None:
+            self.preview_window.destroy()
+        self.preview_window = None
+        self.preview_label = None
+        self.preview_photo = None
+
+    def _refresh_preview(self) -> None:
+        if self.preview_window is None or not self.preview_window.winfo_exists() or self.preview_label is None:
+            return
+        frame = self.runner.preview_frame()
+        if frame is None:
+            return
+        height, width = frame.shape[:2]
+        scale = min(780 / width, 470 / height, 1.0)
+        image = cv2.resize(frame, (max(1, int(width * scale)), max(1, int(height * scale))), interpolation=cv2.INTER_AREA)
+        ok, encoded = cv2.imencode(".png", image)
+        if ok:
+            self.preview_photo = tk.PhotoImage(data=base64.b64encode(encoded.tobytes()))
+            self.preview_label.configure(image=self.preview_photo, text="")
 
     def _close(self) -> None:
         self.runner.stop()
         self.hotkeys.stop()
+        self._close_preview()
         self.root.destroy()
 
     def run(self) -> int:

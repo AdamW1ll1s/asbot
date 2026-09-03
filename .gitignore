@@ -10,6 +10,7 @@ dist/
 # Machine-specific runtime configuration and visual debug output
 config/profile.yaml
 debug-frame.png
+debug/
 
 # Local editor settings
 .idea/

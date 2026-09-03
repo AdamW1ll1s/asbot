@@ -2,6 +2,8 @@
 # Coordinates are relative to the target window's client area, not the screen.
 window:
   title_contains: "My Test Game"
+  # Set automatically when selected in the desktop UI; avoids binding to a same-named window.
+  # process_id: 1234
   require_foreground: true
 
 hotkeys:
@@ -22,8 +24,24 @@ health_bar:
   column_coverage: 0.35
   # Never issue a key if this is below the detector confidence.
   min_confidence: 0.70
+  # Require this many confident frames before an action can trigger.
+  consecutive_frames: 2
+  # Optional extra color bands. Useful when the target color crosses the HSV hue boundary.
+  # hsv_ranges:
+  #   - lower: [170, 110, 80]
+  #     upper: [179, 255, 255]
 
 rules:
   heal_below_percent: 30
   heal_key: "5"
   cooldown_ms: 1500
+  hold_ms: 50
+  # `heal_key` accepts chords and sequences, e.g. "CTRL+1" or "1,2".
+
+# Optional rules are evaluated after the primary rule.
+# additional_rules:
+#   - name: "Emergency heal"
+#     heal_below_percent: 15
+#     heal_key: "CTRL+5"
+#     cooldown_ms: 3000
+#     hold_ms: 80
