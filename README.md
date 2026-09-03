@@ -25,7 +25,7 @@ python -m game_assist.main --config config\profile.yaml
 
 先将 `config/profile.yaml` 中的 `window.title_contains` 改为目标窗口标题的一部分，再根据实际 UI 调整 `health_bar.roi`。坐标以**窗口客户区左上角**为原点，单位为像素。
 
-将 `save_debug_frame` 暂时设为 `true`，启动后会按秒更新 `debug/latest-frame.png` 和 `debug/latest-overlay.png`；也可以在实时预览中先框选完整血条 ROI，再切换到取色模式单击有色填充部分。预览支持按钮缩放、`Ctrl + 鼠标滚轮` 和滚动条。完成后关闭调试截图选项并保存配置。
+将 `save_debug_frame` 暂时设为 `true`，启动后会按秒更新 `debug/latest-frame.png` 和 `debug/latest-overlay.png`；也可以在实时预览中先框选完整血条 ROI，再切换到取色模式单击有色填充部分。预览中直接滚动鼠标滚轮缩放，按住右键拖拽移动画面，也可以使用缩放按钮和滚动条。完成后关闭调试截图选项并保存配置。
 
 运行后：F8 开始/停止；F12 立即停止。目标窗口失去前台焦点时，程序会释放按键并暂停；切回目标窗口后自动继续。
 

@@ -257,7 +257,7 @@ class GameAssistApp:
         self.preview_rendered_revision = -1
         self.preview_mode.set("roi")
         self.preview_zoom_text.set("缩放：适应窗口")
-        self.preview_help.set("先拖拽覆盖完整血条（包括空血部分），然后切换到吸取颜色。")
+        self.preview_help.set("左键框选完整血条；滚轮缩放；按住右键拖拽移动画面。")
         self.preview_reading.set("等待首次识别")
         window = tk.Toplevel(self.root)
         window.title("Game Assist · 实时识别预览")
@@ -288,7 +288,10 @@ class GameAssistApp:
         self.preview_canvas.bind("<ButtonPress-1>", self._preview_press)
         self.preview_canvas.bind("<B1-Motion>", self._preview_drag)
         self.preview_canvas.bind("<ButtonRelease-1>", self._preview_release)
-        self.preview_canvas.bind("<Control-MouseWheel>", self._preview_mousewheel)
+        self.preview_canvas.bind("<MouseWheel>", self._preview_mousewheel)
+        self.preview_canvas.bind("<ButtonPress-3>", self._preview_pan_start)
+        self.preview_canvas.bind("<B3-Motion>", self._preview_pan_drag)
+        self.preview_canvas.bind("<ButtonRelease-3>", self._preview_pan_end)
         self.preview_window = window
         window.protocol("WM_DELETE_WINDOW", self._close_preview)
 
@@ -305,15 +308,15 @@ class GameAssistApp:
             self.runner.stop()
             self.status.set("校准预览已停止 · 保存配置后可开始自动化")
 
-    def _refresh_preview(self, force: bool = False) -> None:
+    def _refresh_preview(self, force: bool = False) -> bool:
         if self.preview_window is None or not self.preview_window.winfo_exists() or self.preview_canvas is None:
-            return
+            return False
         snapshot = self.runner.preview_frame()
         if snapshot is None:
-            return
+            return False
         revision, frame = snapshot
         if revision == self.preview_rendered_revision and not force:
-            return
+            return False
         height, width = frame.shape[:2]
         canvas_width = self.preview_canvas.winfo_width()
         canvas_height = self.preview_canvas.winfo_height()
@@ -333,6 +336,8 @@ class GameAssistApp:
             self.preview_canvas.create_image(0, 0, image=self.preview_photo, anchor="nw", tags="frame")
             self.preview_canvas.tag_lower("frame")
             self.preview_canvas.configure(scrollregion=(0, 0, image.shape[1], image.shape[0]))
+            return True
+        return False
 
     def _preview_press(self, event: tk.Event) -> None:
         if self.preview_canvas is None:
@@ -420,11 +425,32 @@ class GameAssistApp:
         self.preview_help.set(f"已吸取颜色 HSV {(hue, saturation, value)}。观察置信度，满意后点击主界面的“保存配置”。")
         self.status.set(f"已取色 HSV {(hue, saturation, value)}；点击“保存配置”生效")
 
-    def _preview_zoom_by(self, multiplier: float) -> None:
-        self.preview_zoom = min(4.0, max(0.25, self.preview_zoom * multiplier))
+    def _preview_zoom_by(self, multiplier: float, anchor: tuple[int, int] | None = None) -> None:
+        source_anchor: tuple[float, float] | None = None
+        if self.preview_canvas is not None and anchor is not None:
+            source_anchor = (
+                self.preview_canvas.canvasx(anchor[0]) / self.preview_scale,
+                self.preview_canvas.canvasy(anchor[1]) / self.preview_scale,
+            )
+        next_zoom = min(4.0, max(0.25, self.preview_zoom * multiplier))
+        if next_zoom == self.preview_zoom:
+            return
+        self.preview_zoom = next_zoom
         if self.preview_canvas is not None:
             self.preview_canvas.delete("selection")
-        self._refresh_preview(force=True)
+        rendered = self._refresh_preview(force=True)
+        if self.preview_canvas is not None and source_anchor is not None and rendered:
+            image_bounds = self.preview_canvas.bbox("frame")
+            if image_bounds is None:
+                return
+            image_width = max(1, image_bounds[2] - image_bounds[0])
+            image_height = max(1, image_bounds[3] - image_bounds[1])
+            left = source_anchor[0] * self.preview_scale - anchor[0]
+            top = source_anchor[1] * self.preview_scale - anchor[1]
+            max_left = max(0, image_width - self.preview_canvas.winfo_width())
+            max_top = max(0, image_height - self.preview_canvas.winfo_height())
+            self.preview_canvas.xview_moveto(min(max(left, 0), max_left) / image_width)
+            self.preview_canvas.yview_moveto(min(max(top, 0), max_top) / image_height)
 
     def _preview_fit(self) -> None:
         self.preview_zoom = 1.0
@@ -435,7 +461,23 @@ class GameAssistApp:
         self._refresh_preview(force=True)
 
     def _preview_mousewheel(self, event: tk.Event) -> str:
-        self._preview_zoom_by(1.25 if event.delta > 0 else 0.8)
+        self._preview_zoom_by(1.25 if event.delta > 0 else 0.8, anchor=(event.x, event.y))
+        return "break"
+
+    def _preview_pan_start(self, event: tk.Event) -> str:
+        if self.preview_canvas is not None:
+            self.preview_canvas.scan_mark(event.x, event.y)
+            self.preview_canvas.configure(cursor="fleur")
+        return "break"
+
+    def _preview_pan_drag(self, event: tk.Event) -> str:
+        if self.preview_canvas is not None:
+            self.preview_canvas.scan_dragto(event.x, event.y, gain=1)
+        return "break"
+
+    def _preview_pan_end(self, _: tk.Event) -> str:
+        if self.preview_canvas is not None:
+            self.preview_canvas.configure(cursor="crosshair")
         return "break"
 
     def _close(self) -> None:
