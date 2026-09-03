@@ -98,6 +98,8 @@ def load_config(path: str | Path) -> AppConfig:
         raise ValueError("health_bar.column_coverage must be in (0, 1]")
     if config.health_bar.consecutive_frames < 1:
         raise ValueError("health_bar.consecutive_frames must be at least 1")
+    if config.toggle_hotkey == config.emergency_stop_hotkey:
+        raise ValueError("hotkeys.toggle and hotkeys.emergency_stop must be different")
     return config
 
 

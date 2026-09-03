@@ -7,7 +7,7 @@ import sys
 import threading
 
 from .config import load_config
-from .hotkeys import GlobalHotkeys
+from .hotkeys import GlobalHotkeys, HotkeyRegistrationError
 from .runner import AutomationRunner
 from .ui import run_ui
 from .windows import WindowsOnlyError
@@ -42,7 +42,10 @@ def main() -> int:
 
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
-    hotkeys.start()
+    try:
+        hotkeys.start()
+    except (HotkeyRegistrationError, OSError, ValueError) as error:
+        logging.warning("Global hotkeys disabled: %s", error)
     logging.info("Ready. %s toggles; %s immediately stops.", config.toggle_hotkey, config.emergency_stop_hotkey)
     try:
         shutdown.wait()

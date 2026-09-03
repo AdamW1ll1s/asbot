@@ -10,7 +10,7 @@ from tkinter import messagebox, ttk
 import cv2
 
 from .config import AppConfig, load_config, save_config
-from .hotkeys import GlobalHotkeys
+from .hotkeys import GlobalHotkeys, HotkeyRegistrationError
 from .runner import AutomationRunner
 from .windows import WindowsOnlyError, list_visible_windows
 
@@ -298,7 +298,13 @@ class GameAssistApp:
         self.root.destroy()
 
     def run(self) -> int:
-        self.hotkeys.start()
+        try:
+            self.hotkeys.start()
+        except (HotkeyRegistrationError, OSError, ValueError) as error:
+            # The UI remains usable through its buttons.  Most commonly this
+            # means another copy of the app (or another tool) owns F8/F12.
+            self.status.set("全局热键不可用 · 可使用界面按钮启动/停止")
+            self.root.after(0, lambda: messagebox.showwarning("全局热键不可用", str(error), parent=self.root))
         self.refresh_windows()
         self.root.after(250, self._refresh_status)
         self.root.mainloop()

@@ -12,7 +12,7 @@ import numpy as np
 from .config import AppConfig
 from .health import HealthBarDetector
 from .input import KeyboardExecutor
-from .windows import client_rect, find_window, is_foreground
+from .windows import activate_window, client_rect, find_window, is_foreground
 
 
 LOG = logging.getLogger(__name__)
@@ -61,6 +61,13 @@ class AutomationRunner:
             if hwnd is None:
                 LOG.error("No visible window contains title: %r", self.config.window.title_contains)
                 return
+            # Clicking the control-panel Start button necessarily gives the
+            # control panel focus. Restore focus to the selected target before
+            # enforcing the foreground-only safety rule.
+            if not self.preview_only and self.config.window.require_foreground:
+                if not activate_window(hwnd) or not is_foreground(hwnd):
+                    LOG.warning("Could not activate target window; stopping before any input")
+                    return
             with mss.mss() as screen:
                 while not self._cancel.is_set():
                     if not self.preview_only and self.config.window.require_foreground and not is_foreground(hwnd):

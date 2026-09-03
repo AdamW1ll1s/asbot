@@ -102,3 +102,16 @@ def client_rect(hwnd: int) -> ClientRect | None:
 def is_foreground(hwnd: int) -> bool:
     _require_windows()
     return user32.GetForegroundWindow() == hwnd
+
+
+def activate_window(hwnd: int) -> bool:
+    """Request foreground focus for a visible target window.
+
+    Windows may decline this request due to its foreground-lock rules; callers
+    must still verify focus before sending input.
+    """
+    _require_windows()
+    if is_foreground(hwnd):
+        return True
+    user32.ShowWindow(hwnd, 9)  # SW_RESTORE: restore a minimized target first.
+    return bool(user32.SetForegroundWindow(hwnd))
