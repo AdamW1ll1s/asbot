@@ -1,0 +1,40 @@
+# Game Assist — 第一版
+
+这是一个仅用于自有程序、离线/单机游戏或已获授权自动化测试的 Windows 视觉自动化起步项目。它不读取目标进程内存、不注入进程、不尝试绕过反作弊或安全机制。
+
+第一版已实现：
+
+- 通过窗口标题绑定可见目标窗口；
+- 从目标窗口的客户区截图；
+- 在固定 ROI 中按 HSV 颜色和横向填充长度估算血条百分比；
+- F8 启停、F12 紧急停止（均可在配置中修改）；
+- 每次等待均可取消；停止、失焦和异常时都会发送已按下键的 key-up；
+- 血量低于阈值时按一次指定治疗键，并有冷却时间。
+
+## 安装与运行（Windows）
+
+需要 Python 3.11+：
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements-dev.txt
+Copy-Item config\profile.example.yaml config\profile.yaml
+python -m game_assist.main --config config\profile.yaml
+```
+
+先将 `config/profile.yaml` 中的 `window.title_contains` 改为目标窗口标题的一部分，再根据实际 UI 调整 `health_bar.roi`。坐标以**窗口客户区左上角**为原点，单位为像素。
+
+将 `save_debug_frame` 暂时设为 `true`，启动后会写出 `debug-frame.png`；用它测量血条区域并通过 OpenCV HSV 取色工具调整 `hsv_lower` / `hsv_upper`。完成后关闭该选项。
+
+运行后：F8 开始/停止；F12 立即停止。运行期间只要目标窗口失去前台焦点，程序会安全停止。
+
+## 测试与打包
+
+```powershell
+pytest
+```
+
+已提供 [Windows GitHub Actions 工作流](.github/workflows/windows.yml)：它在 `windows-latest` 运行测试、用 Nuitka 构建 `game-assist.exe`，并上传构建产物。
+
+下一步可在不改变执行器的前提下增加模板匹配、OCR 和 YOLO/ONNX 检测器；它们都只需输出统一的识别结果，规则层再决定动作。

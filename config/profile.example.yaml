@@ -1,0 +1,29 @@
+# This profile is intentionally scoped to a visible, foreground window.
+# Coordinates are relative to the target window's client area, not the screen.
+window:
+  title_contains: "My Test Game"
+  require_foreground: true
+
+hotkeys:
+  toggle: "F8"
+  emergency_stop: "F12"
+
+capture:
+  poll_interval_ms: 100
+  save_debug_frame: false
+
+health_bar:
+  # Left, top, width, height in client-area pixels at your selected UI scale.
+  roi: [40, 45, 220, 18]
+  # OpenCV HSV ranges. Tune after collecting a debug capture.
+  hsv_lower: [0, 110, 80]
+  hsv_upper: [10, 255, 255]
+  # A column counts as filled when this fraction of its pixels matches the color.
+  column_coverage: 0.35
+  # Never issue a key if this is below the detector confidence.
+  min_confidence: 0.70
+
+rules:
+  heal_below_percent: 30
+  heal_key: "5"
+  cooldown_ms: 1500

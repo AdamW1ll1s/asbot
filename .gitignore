@@ -1,0 +1,16 @@
+# Python environments and generated files
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Machine-specific runtime configuration and visual debug output
+config/profile.yaml
+debug-frame.png
+
+# Local editor settings
+.idea/
+.vscode/
