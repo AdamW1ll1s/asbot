@@ -32,6 +32,7 @@ class AutomationRunner:
         self._last_debug_at = 0.0
         self._preview_lock = threading.Lock()
         self._latest_preview: np.ndarray | None = None
+        self._latest_raw: np.ndarray | None = None
 
     @property
     def running(self) -> bool:
@@ -80,6 +81,7 @@ class AutomationRunner:
                         self._reading_streak = 0
                     with self._preview_lock:
                         self._latest_preview = self._annotate_frame(client_bgr, reading)
+                        self._latest_raw = client_bgr.copy()
                     self._write_debug(client_bgr, reading)
                     self._cancel.wait(self.config.poll_interval_ms / 1000)
         except Exception:
@@ -117,6 +119,10 @@ class AutomationRunner:
     def preview_frame(self) -> np.ndarray | None:
         with self._preview_lock:
             return None if self._latest_preview is None else self._latest_preview.copy()
+
+    def raw_preview_frame(self) -> np.ndarray | None:
+        with self._preview_lock:
+            return None if self._latest_raw is None else self._latest_raw.copy()
 
     def _annotate_frame(self, frame: np.ndarray, reading: object) -> np.ndarray:
         output = frame.copy()

@@ -57,8 +57,11 @@ class GameAssistApp:
         self.status = tk.StringVar(value="待命 · 请先选择目标窗口")
         self.window_count = tk.StringVar(value="尚未刷新")
         self.preview_window: tk.Toplevel | None = None
-        self.preview_label: tk.Label | None = None
+        self.preview_canvas: tk.Canvas | None = None
         self.preview_photo: tk.PhotoImage | None = None
+        self.preview_scale = 1.0
+        self.preview_start: tuple[int, int] | None = None
+        self.preview_rect: int | None = None
         self._build()
         self.root.protocol("WM_DELETE_WINDOW", self._close)
 
@@ -210,9 +213,12 @@ class GameAssistApp:
         window.title("Game Assist · 实时识别预览")
         window.configure(bg=self.BACKGROUND)
         window.geometry("820x560")
-        ttk.Label(window, text="绿色框：识别可信  ·  橙色框：等待确认或置信度不足", style="Subtitle.TLabel").pack(anchor="w", padx=16, pady=(14, 8))
-        self.preview_label = tk.Label(window, text="等待目标窗口画面…", bg="#07101c", fg=self.MUTED, font=("Segoe UI", 12), compound="center")
-        self.preview_label.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+        ttk.Label(window, text="拖拽框选检测区域；单击血条填充色取色。绿色框：识别可信，橙色框：等待确认。", style="Subtitle.TLabel").pack(anchor="w", padx=16, pady=(14, 8))
+        self.preview_canvas = tk.Canvas(window, bg="#07101c", highlightthickness=0, cursor="crosshair")
+        self.preview_canvas.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+        self.preview_canvas.bind("<ButtonPress-1>", self._preview_press)
+        self.preview_canvas.bind("<B1-Motion>", self._preview_drag)
+        self.preview_canvas.bind("<ButtonRelease-1>", self._preview_release)
         self.preview_window = window
         window.protocol("WM_DELETE_WINDOW", self._close_preview)
 
@@ -220,11 +226,11 @@ class GameAssistApp:
         if self.preview_window is not None:
             self.preview_window.destroy()
         self.preview_window = None
-        self.preview_label = None
+        self.preview_canvas = None
         self.preview_photo = None
 
     def _refresh_preview(self) -> None:
-        if self.preview_window is None or not self.preview_window.winfo_exists() or self.preview_label is None:
+        if self.preview_window is None or not self.preview_window.winfo_exists() or self.preview_canvas is None:
             return
         frame = self.runner.preview_frame()
         if frame is None:
@@ -235,7 +241,44 @@ class GameAssistApp:
         ok, encoded = cv2.imencode(".png", image)
         if ok:
             self.preview_photo = tk.PhotoImage(data=base64.b64encode(encoded.tobytes()))
-            self.preview_label.configure(image=self.preview_photo, text="")
+            self.preview_scale = scale
+            self.preview_canvas.delete("frame")
+            self.preview_canvas.create_image(0, 0, image=self.preview_photo, anchor="nw", tags="frame")
+            self.preview_canvas.configure(scrollregion=(0, 0, image.shape[1], image.shape[0]))
+
+    def _preview_press(self, event: tk.Event) -> None:
+        self.preview_start = (event.x, event.y)
+        if self.preview_canvas:
+            self.preview_rect = self.preview_canvas.create_rectangle(event.x, event.y, event.x, event.y, outline="#39d9a9", width=2, tags="selection")
+
+    def _preview_drag(self, event: tk.Event) -> None:
+        if self.preview_canvas and self.preview_start and self.preview_rect:
+            self.preview_canvas.coords(self.preview_rect, self.preview_start[0], self.preview_start[1], event.x, event.y)
+
+    def _preview_release(self, event: tk.Event) -> None:
+        if not self.preview_start:
+            return
+        start_x, start_y = self.preview_start
+        end_x, end_y = event.x, event.y
+        self.preview_start = None
+        raw = self.runner.raw_preview_frame()
+        if raw is None:
+            return
+        x1, x2 = sorted((int(start_x / self.preview_scale), int(end_x / self.preview_scale)))
+        y1, y2 = sorted((int(start_y / self.preview_scale), int(end_y / self.preview_scale)))
+        if abs(x2 - x1) < 4 or abs(y2 - y1) < 4:
+            x, y = max(0, x1), max(0, y1)
+            if y >= raw.shape[0] or x >= raw.shape[1]:
+                return
+            hsv = cv2.cvtColor(raw[y : y + 1, x : x + 1], cv2.COLOR_BGR2HSV)[0, 0]
+            lower = tuple(max(0, int(value) - spread) for value, spread in zip(hsv, (10, 80, 80)))
+            upper = tuple(min(limit, int(value) + spread) for value, limit, spread in zip(hsv, (179, 255, 255), (10, 80, 80)))
+            self.config = replace(self.config, health_bar=replace(self.config.health_bar, hsv_lower=lower, hsv_upper=upper, hsv_ranges=()))
+            self.status.set(f"已取色 HSV {tuple(int(v) for v in hsv)}；点击“保存配置”生效")
+            return
+        roi = (max(0, x1), max(0, y1), x2 - x1, y2 - y1)
+        self.config = replace(self.config, health_bar=replace(self.config.health_bar, roi=roi))
+        self.status.set(f"已框选 ROI {roi}；点击“保存配置”生效")
 
     def _close(self) -> None:
         self.runner.stop()
