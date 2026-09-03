@@ -18,7 +18,7 @@ jobs:
       - name: Run tests
         run: pytest
       - name: Build executable
-        run: python -m nuitka --onefile --output-filename=game-assist.exe --include-package=game_assist run.py
+        run: python -m nuitka --onefile --enable-plugin=tk-inter --output-filename=game-assist.exe --include-package=game_assist run.py
       - uses: actions/upload-artifact@v4
         with:
           name: game-assist-windows

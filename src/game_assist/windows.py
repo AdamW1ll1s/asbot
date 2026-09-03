@@ -20,6 +20,15 @@ class ClientRect:
     height: int
 
 
+@dataclass(frozen=True)
+class VisibleWindow:
+    """A user-selectable top-level window."""
+
+    hwnd: int
+    title: str
+    process_id: int
+
+
 class WindowsOnlyError(RuntimeError):
     pass
 
@@ -49,6 +58,29 @@ def find_window(title_contains: str) -> int | None:
 
     user32.EnumWindows(callback_type(callback), 0)
     return matches[0] if matches else None
+
+
+def list_visible_windows() -> list[VisibleWindow]:
+    """Return titled, visible top-level windows for the desktop picker."""
+    _require_windows()
+    windows: list[VisibleWindow] = []
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def callback(hwnd: int, _: int) -> bool:
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
+            return True
+        title = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, title, len(title))
+        process_id = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+        windows.append(VisibleWindow(hwnd=hwnd, title=title.value, process_id=process_id.value))
+        return True
+
+    user32.EnumWindows(callback_type(callback), 0)
+    return sorted(windows, key=lambda item: item.title.casefold())
 
 
 def client_rect(hwnd: int) -> ClientRect | None:

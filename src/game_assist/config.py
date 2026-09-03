@@ -91,3 +91,37 @@ def load_config(path: str | Path) -> AppConfig:
     if not 0 < config.health_bar.column_coverage <= 1:
         raise ValueError("health_bar.column_coverage must be in (0, 1]")
     return config
+
+
+def save_config(path: str | Path, config: AppConfig) -> None:
+    """Write a portable YAML profile from the in-memory application settings."""
+    raw = {
+        "window": {
+            "title_contains": config.window.title_contains,
+            "require_foreground": config.window.require_foreground,
+        },
+        "hotkeys": {
+            "toggle": config.toggle_hotkey,
+            "emergency_stop": config.emergency_stop_hotkey,
+        },
+        "capture": {
+            "poll_interval_ms": config.poll_interval_ms,
+            "save_debug_frame": config.save_debug_frame,
+        },
+        "health_bar": {
+            "roi": list(config.health_bar.roi),
+            "hsv_lower": list(config.health_bar.hsv_lower),
+            "hsv_upper": list(config.health_bar.hsv_upper),
+            "column_coverage": config.health_bar.column_coverage,
+            "min_confidence": config.health_bar.min_confidence,
+        },
+        "rules": {
+            "heal_below_percent": config.rules.heal_below_percent,
+            "heal_key": config.rules.heal_key,
+            "cooldown_ms": config.rules.cooldown_ms,
+        },
+    }
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("w", encoding="utf-8") as file:
+        yaml.safe_dump(raw, file, allow_unicode=True, sort_keys=False)
