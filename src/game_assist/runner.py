@@ -37,6 +37,7 @@ class AutomationRunner:
         self._preview_lock = threading.Lock()
         self._latest_preview: np.ndarray | None = None
         self._latest_raw: np.ndarray | None = None
+        self._preview_revision = 0
 
     @property
     def running(self) -> bool:
@@ -119,6 +120,7 @@ class AutomationRunner:
                     with self._preview_lock:
                         self._latest_preview = self._annotate_frame(client_bgr, reading)
                         self._latest_raw = client_bgr.copy()
+                        self._preview_revision += 1
                     self._write_debug(client_bgr, reading)
         except Exception:
             LOG.exception("Automation failed safely")
@@ -153,9 +155,11 @@ class AutomationRunner:
         cv2.imwrite("debug/latest-frame.png", frame)
         cv2.imwrite("debug/latest-overlay.png", output)
 
-    def preview_frame(self) -> np.ndarray | None:
+    def preview_frame(self) -> tuple[int, np.ndarray] | None:
         with self._preview_lock:
-            return None if self._latest_preview is None else self._latest_preview.copy()
+            if self._latest_preview is None:
+                return None
+            return self._preview_revision, self._latest_preview.copy()
 
     def raw_preview_frame(self) -> np.ndarray | None:
         with self._preview_lock:
