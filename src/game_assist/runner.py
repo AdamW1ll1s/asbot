@@ -19,8 +19,9 @@ LOG = logging.getLogger(__name__)
 
 
 class AutomationRunner:
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(self, config: AppConfig, preview_only: bool = False) -> None:
         self.config = config
+        self.preview_only = preview_only
         self._cancel = threading.Event()
         self._thread: threading.Thread | None = None
         self._keyboard = KeyboardExecutor()
@@ -62,7 +63,7 @@ class AutomationRunner:
                 return
             with mss.mss() as screen:
                 while not self._cancel.is_set():
-                    if self.config.window.require_foreground and not is_foreground(hwnd):
+                    if not self.preview_only and self.config.window.require_foreground and not is_foreground(hwnd):
                         LOG.warning("Target window lost focus; stopping")
                         return
                     rect = client_rect(hwnd)
@@ -75,7 +76,7 @@ class AutomationRunner:
                         self.last_reading = (reading.percent, reading.confidence)
                         LOG.info("HP %.1f%% (confidence %.2f)", reading.percent, reading.confidence)
                         self._reading_streak = self._reading_streak + 1 if reading.confidence >= self.config.health_bar.min_confidence else 0
-                        if self._reading_streak >= self.config.health_bar.consecutive_frames:
+                        if not self.preview_only and self._reading_streak >= self.config.health_bar.consecutive_frames:
                             self._apply_health_rule(reading.percent, reading.confidence)
                     else:
                         self._reading_streak = 0

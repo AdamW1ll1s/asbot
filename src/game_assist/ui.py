@@ -180,12 +180,13 @@ class GameAssistApp:
     def _start(self) -> None:
         if not self.save_settings():
             return
-        if self.runner.running:
+        if self.runner.running and not self.runner.preview_only:
             return
+        if self.runner.running:
+            self.runner.stop()
         self.runner = AutomationRunner(self.config)
         self.runner.start()
         self.status.set("运行中 · 目标窗口必须保持前台")
-        self.show_preview()
         self._refresh_status()
 
     def _stop(self) -> None:
@@ -209,6 +210,13 @@ class GameAssistApp:
             self.preview_window.deiconify()
             self.preview_window.lift()
             return
+        # Calibration is intentionally capture-only: the preview window may take focus,
+        # so it must never emit input into the wrong foreground application.
+        if self.runner.running:
+            self.runner.stop()
+        self.runner = AutomationRunner(self.config, preview_only=True)
+        self.runner.start()
+        self.status.set("校准预览中 · 不会发送任何按键")
         window = tk.Toplevel(self.root)
         window.title("Game Assist · 实时识别预览")
         window.configure(bg=self.BACKGROUND)
@@ -228,6 +236,9 @@ class GameAssistApp:
         self.preview_window = None
         self.preview_canvas = None
         self.preview_photo = None
+        if self.runner.preview_only:
+            self.runner.stop()
+            self.status.set("校准预览已停止 · 保存配置后可开始自动化")
 
     def _refresh_preview(self) -> None:
         if self.preview_window is None or not self.preview_window.winfo_exists() or self.preview_canvas is None:
