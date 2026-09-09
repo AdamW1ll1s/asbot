@@ -4,7 +4,16 @@ import numpy as np
 import pytest
 
 from game_assist.config import PluginConfig, load_config
-from game_assist.plugins.auto_key import AutoKeyPlugin, PressCommand, WaitCommand, parse_script
+from game_assist.plugins.auto_key import (
+    AutoKeyPlugin,
+    KeyStateCommand,
+    MouseButtonCommand,
+    MouseMoveCommand,
+    MouseWheelCommand,
+    PressCommand,
+    WaitCommand,
+    parse_script,
+)
 from game_assist.plugins.base import PluginContext, PluginResult
 
 
@@ -107,3 +116,36 @@ def test_process_frame_uses_same_timer_state_machine() -> None:
     frame = np.zeros((1, 1, 3), dtype=np.uint8)
 
     assert plugin.process_frame(frame, 0.0, PluginContext({})).action.key == "A"
+
+
+def test_parses_recorded_keyboard_and_mouse_commands() -> None:
+    macro = parse_script(
+        """macro recorded
+key_down W
+move 120 240
+mouse_down left 120 240
+wheel -120 120 240
+mouse_up left 120 240
+key_up W
+end
+"""
+    )[0]
+
+    assert macro.commands == (
+        KeyStateCommand("W", True),
+        MouseMoveCommand(120, 240),
+        MouseButtonCommand("left", True, 120, 240),
+        MouseWheelCommand(-120, 120, 240),
+        MouseButtonCommand("left", False, 120, 240),
+        KeyStateCommand("W", False),
+    )
+
+
+def test_mouse_command_becomes_mouse_action_request() -> None:
+    plugin = _plugin("macro click\nmove 12 34\nend")
+
+    action = plugin.process_tick(0.0, PluginContext({})).action
+
+    assert action is not None
+    assert action.action_type == "mouse_move"
+    assert (action.x, action.y) == (12, 34)

@@ -699,6 +699,10 @@ class GameAssistApp:
         return "break"
 
     def _close(self) -> None:
+        for panel in getattr(self, "plugin_panels", {}).values():
+            shutdown = getattr(panel, "shutdown", None)
+            if shutdown is not None:
+                shutdown()
         self.runner.stop()
         self.hotkeys.stop()
         self._close_preview()

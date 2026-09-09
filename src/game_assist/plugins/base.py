@@ -17,6 +17,11 @@ class ActionRequest:
     hold_ms: int
     audit_message: str
     success_message: str
+    action_type: str = "key_tap"
+    x: int | None = None
+    y: int | None = None
+    button: str | None = None
+    wheel_delta: int = 0
 
 
 @dataclass(frozen=True)

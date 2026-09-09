@@ -39,7 +39,7 @@ Game Assist 是一个 Windows 可见画面自动化宿主，用于自有程序�
 当前有两个可用功能插件：
 
 - `auto_heal` / 自动喝血：使用固定 ROI 和 HSV 色段识别水平血条，连续多帧低于阈值后申请治疗按键动作，并维护每条规则自己的冷却。
-- `auto_key` / 自动按键：解析受限宏 DSL，通过非阻塞状态机执行启动/定时触发、插件指标条件、按键、等待与循环。
+- `auto_key` / 自动按键：解析受限宏 DSL，通过非阻塞状态机执行启动/定时触发、插件指标条件、键鼠动作、等待与循环；设置面板还包含前台目标窗口键鼠录制器。
 
 自动打怪、怪物检测、选怪、OCR 和 ONNX 模型尚未实现。
 
@@ -62,6 +62,7 @@ Game Assist 是一个 Windows 可见画面自动化宿主，用于自有程序�
 | `src/game_assist/plugins/auto_heal_ui.py` | 自动喝血专属设置面板 |
 | `src/game_assist/plugins/auto_key.py` | 自动按键 DSL 解析器和非阻塞宏状态机 |
 | `src/game_assist/plugins/auto_key_ui.py` | 自动按键脚本编辑器、帮助和校验反馈 |
+| `src/game_assist/recording.py` | Win32 低级键鼠录制、前台过滤、轨迹采样和 DSL 导出 |
 | `config/profile.example.yaml` | 可提交的示例配置和默认值 |
 | `tests/` | macOS/Linux 可运行的纯逻辑与模拟测试 |
 | `.github/workflows/windows.yml` | Windows 测试与 Nuitka 打包 |
@@ -190,9 +191,14 @@ end
 - 多个条件只能用 `and` 连接；
 - `repeat 1..10000` 或 `repeat forever` 重复整个动作列表；
 - `press <key> [hold <时间>]`；
+- `key_down <key>` / `key_up <key>`，用于保留录制的按住时长；
+- `move <x> <y>`、`mouse_down/mouse_up <button> <x> <y>`；
+- `wheel/hwheel <delta> <x> <y>`；鼠标坐标相对于目标窗口客户区；
 - `wait <时间>`，支持 `ms` 和 `s`。
 
-所有等待都通过 `time.monotonic()` 状态推进，不阻塞线程。定时实际分辨率由 `capture.poll_interval_ms` 决定。动作未完成时程序计数器不得前进；只有宿主调用 `mark_action_completed()` 后才能执行下一条命令。
+所有等待都通过 `time.monotonic()` 状态推进，不阻塞线程。存在定时插件时宿主约每 10ms 推进一次，实际精度仍受 Windows 调度影响；同一时刻的连续动作可以在一个有界批次内完成。动作未完成时程序计数器不得前进；只有宿主调用 `mark_action_completed()` 后才能执行下一条命令。
+
+录制器只在目标窗口处于前台时采集物理键盘、鼠标键、滚轮与按 20ms 最小间隔采样的轨迹；忽略 injected 事件，按 F10 停止，并将客户区相对坐标转换为上述 DSL。单次最多 5000 个事件。录制与回放不得绕过前台检查、F12 紧急停止、按键/鼠标键释放和审计。
 
 不得用 `eval()`、`exec()`、Shell、PowerShell、文件包含或动态 Python 扩展脚本。需要的新逻辑必须实现为可解析、可校验、可测试的 AST/数据结构。应限制脚本大小、循环次数和时间范围，避免资源失控。
 

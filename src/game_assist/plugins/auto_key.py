@@ -8,7 +8,7 @@ import re
 import numpy as np
 
 from ..config import AppConfig
-from ..input import parse_key_expression
+from ..input import parse_key_expression, parse_single_key
 from .base import ActionRequest, PluginContext, PluginResult
 
 
@@ -23,7 +23,36 @@ class WaitCommand:
     duration_ms: int
 
 
-Command = PressCommand | WaitCommand
+@dataclass(frozen=True)
+class KeyStateCommand:
+    key: str
+    down: bool
+
+
+@dataclass(frozen=True)
+class MouseMoveCommand:
+    x: int
+    y: int
+
+
+@dataclass(frozen=True)
+class MouseButtonCommand:
+    button: str
+    down: bool
+    x: int
+    y: int
+
+
+@dataclass(frozen=True)
+class MouseWheelCommand:
+    delta: int
+    x: int
+    y: int
+    horizontal: bool = False
+
+
+Command = PressCommand | WaitCommand | KeyStateCommand | MouseMoveCommand | MouseButtonCommand | MouseWheelCommand
+MOUSE_BUTTONS = {"left", "right", "middle", "x1", "x2"}
 
 
 @dataclass(frozen=True)
@@ -194,6 +223,44 @@ def parse_script(script: str) -> tuple[Macro, ...]:
             parse_key_expression(key)
             hold_ms = 50 if len(parts) == 2 else parse_duration(parts[3])
             commands.append(PressCommand(key, hold_ms))
+        elif keyword in {"key_down", "key_up"}:
+            if len(parts) != 2:
+                raise ValueError(f"第 {line_number} 行：{keyword} 格式为 {keyword} <按键>")
+            key = parts[1].upper()
+            parse_single_key(key)
+            commands.append(KeyStateCommand(key, keyword == "key_down"))
+        elif keyword == "move":
+            if len(parts) != 3:
+                raise ValueError(f"第 {line_number} 行：move 格式为 move <x> <y>")
+            commands.append(MouseMoveCommand(_coordinate(parts[1], line_number), _coordinate(parts[2], line_number)))
+        elif keyword in {"mouse_down", "mouse_up"}:
+            if len(parts) != 4 or parts[1].lower() not in MOUSE_BUTTONS:
+                raise ValueError(f"第 {line_number} 行：{keyword} 格式为 {keyword} <left/right/middle/x1/x2> <x> <y>")
+            commands.append(
+                MouseButtonCommand(
+                    parts[1].lower(),
+                    keyword == "mouse_down",
+                    _coordinate(parts[2], line_number),
+                    _coordinate(parts[3], line_number),
+                )
+            )
+        elif keyword in {"wheel", "hwheel"}:
+            if len(parts) != 4:
+                raise ValueError(f"第 {line_number} 行：{keyword} 格式为 {keyword} <增量> <x> <y>")
+            try:
+                delta = int(parts[1])
+            except ValueError as error:
+                raise ValueError(f"第 {line_number} 行：滚轮增量必须是整数") from error
+            if not -12000 <= delta <= 12000 or delta == 0:
+                raise ValueError(f"第 {line_number} 行：滚轮增量必须在 -12000 到 12000 之间且不能为 0")
+            commands.append(
+                MouseWheelCommand(
+                    delta,
+                    _coordinate(parts[2], line_number),
+                    _coordinate(parts[3], line_number),
+                    keyword == "hwheel",
+                )
+            )
         elif keyword == "wait":
             if len(parts) != 2:
                 raise ValueError(f"第 {line_number} 行：wait 格式为 wait <时间>")
@@ -208,6 +275,16 @@ def parse_script(script: str) -> tuple[Macro, ...]:
     if len(macros) > 100 or sum(len(macro.commands) for macro in macros) > 10_000:
         raise ValueError("脚本过大：最多 100 个宏、10000 条动作")
     return tuple(macros)
+
+
+def _coordinate(value: str, line_number: int) -> int:
+    try:
+        coordinate = int(value)
+    except ValueError as error:
+        raise ValueError(f"第 {line_number} 行：鼠标坐标必须是整数") from error
+    if not -32768 <= coordinate <= 32767:
+        raise ValueError(f"第 {line_number} 行：鼠标坐标超出支持范围")
+    return coordinate
 
 
 DEFAULT_SCRIPT = """# 启动宿主后执行一次按键序列
@@ -313,14 +390,45 @@ class AutoKeyPlugin:
             pending = self._pending.get(token)
             if pending is None:
                 self._pending[token] = (macro_index, state.command_index)
+            action_type = "key_tap"
+            key = ""
+            hold_ms = 0
+            x = y = None
+            button = None
+            wheel_delta = 0
+            description = ""
+            if isinstance(command, PressCommand):
+                key, hold_ms, description = command.key, command.hold_ms, f"按键 {command.key}"
+            elif isinstance(command, KeyStateCommand):
+                key = command.key
+                action_type = "key_down" if command.down else "key_up"
+                description = f"{'按下' if command.down else '释放'} {command.key}"
+            elif isinstance(command, MouseMoveCommand):
+                action_type, x, y = "mouse_move", command.x, command.y
+                description = f"移动鼠标到 ({x}, {y})"
+            elif isinstance(command, MouseButtonCommand):
+                action_type = "mouse_down" if command.down else "mouse_up"
+                x, y, button = command.x, command.y, command.button
+                description = f"鼠标 {button} {'按下' if command.down else '释放'}"
+            elif isinstance(command, MouseWheelCommand):
+                action_type = "mouse_hwheel" if command.horizontal else "mouse_wheel"
+                x, y, wheel_delta = command.x, command.y, command.delta
+                description = f"鼠标滚轮 {command.delta}"
+            else:  # pragma: no cover - parser only creates the command types above
+                raise TypeError(f"Unsupported macro command: {command!r}")
             return ActionRequest(
                 plugin_id=self.plugin_id,
                 token=token,
                 rule_name=macro.name,
-                key=command.key,
-                hold_ms=command.hold_ms,
-                audit_message=f"插件 {self.display_name} | 宏 {macro.name} | 按键 {command.key}",
-                success_message=f"自动按键 · {macro.name} · 已发送 {command.key}",
+                key=key,
+                hold_ms=hold_ms,
+                audit_message=f"插件 {self.display_name} | 宏 {macro.name} | {description}",
+                success_message=f"自动按键 · {macro.name} · {description}",
+                action_type=action_type,
+                x=x,
+                y=y,
+                button=button,
+                wheel_delta=wheel_delta,
             )
         return None
 

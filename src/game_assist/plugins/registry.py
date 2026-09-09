@@ -29,8 +29,8 @@ PLUGIN_DESCRIPTORS = (
     PluginDescriptor(
         plugin_id="auto_key",
         name="自动按键",
-        description="使用安全的简单脚本编排按键、等待、触发条件和循环。",
-        version="1.0.0",
+        description="录制或编排键盘、鼠标、等待、触发条件和循环。",
+        version="1.1.0",
         factory=AutoKeyPlugin,
     ),
 )

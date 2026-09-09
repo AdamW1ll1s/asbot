@@ -129,8 +129,9 @@ class AutomationRunner:
                     recognition_interval = self.config.recognition_interval_ms / 1000
                     until_next_recognition = recognition_interval - (now - self._last_recognition_at)
                     if until_next_recognition > 0:
-                        self._tick_timed_plugins(now)
-                        self._cancel.wait(min(self.config.poll_interval_ms / 1000, until_next_recognition))
+                        self._tick_timed_plugins(now, hwnd)
+                        timed_interval = 0.01 if any(callable(getattr(item, "process_tick", None)) for item in self._plugins) else 1.0
+                        self._cancel.wait(min(self.config.poll_interval_ms / 1000, timed_interval, until_next_recognition))
                         continue
                     rect = client_rect(hwnd)
                     if rect is None:
@@ -155,7 +156,7 @@ class AutomationRunner:
                     if not self.preview_only:
                         action = next((result.action for result in results if result.action is not None), None)
                         if action is not None:
-                            self._execute_action(action)
+                            self._execute_action(action, hwnd)
                     with self._preview_lock:
                         self._latest_preview = self._annotate_frame(client_bgr, results)
                         self._latest_raw = client_bgr.copy()
@@ -169,23 +170,44 @@ class AutomationRunner:
             self._keyboard.release_all()
             self._cancel.set()
 
-    def _tick_timed_plugins(self, now: float) -> None:
+    def _tick_timed_plugins(self, now: float, hwnd: int) -> None:
         """Advance timer-driven plugins without taking another screenshot."""
         for plugin in self._plugins:
             process_tick = getattr(plugin, "process_tick", None)
             if process_tick is None:
                 continue
-            result = process_tick(now, PluginContext(dict(self.plugin_results)))
-            self.plugin_results[result.plugin_id] = result
-            if not self.preview_only and result.action is not None:
-                self._execute_action(result.action)
-                break
+            # Drain actions with no wait between them. This preserves simultaneous
+            # key/button events while bounded iteration prevents a broken plugin
+            # from monopolizing the runner.
+            for _ in range(64):
+                result = process_tick(time.monotonic(), PluginContext(dict(self.plugin_results)))
+                self.plugin_results[result.plugin_id] = result
+                if self.preview_only or result.action is None:
+                    break
+                self._execute_action(result.action, hwnd)
 
-    def _execute_action(self, request: ActionRequest) -> None:
-        self.last_event = f"{request.plugin_id} · 准备触发 {request.key}"
+    def _execute_action(self, request: ActionRequest, hwnd: int | None = None) -> None:
+        action_label = request.key or request.button or request.action_type
+        self.last_event = f"{request.plugin_id} · 准备触发 {action_label}"
         LOG.warning("Plugin action requested: %s", request.audit_message)
         try:
-            completed = self._keyboard.tap(request.key, duration_ms=request.hold_ms, cancelled=self._cancel)
+            perform = getattr(self._keyboard, "perform", None)
+            if perform is None or request.action_type == "key_tap":
+                completed = self._keyboard.tap(request.key, duration_ms=request.hold_ms, cancelled=self._cancel)
+            else:
+                rect = client_rect(hwnd) if hwnd is not None else None
+                origin = None if rect is None else (rect.left, rect.top)
+                completed = perform(
+                    request.action_type,
+                    key=request.key,
+                    duration_ms=request.hold_ms,
+                    x=request.x,
+                    y=request.y,
+                    button=request.button,
+                    wheel_delta=request.wheel_delta,
+                    client_origin=origin,
+                    cancelled=self._cancel,
+                )
         except Exception as error:
             self._record_action(f"{request.audit_message} | 失败：{error}")
             raise
@@ -197,7 +219,7 @@ class AutomationRunner:
             self.last_event = request.success_message
             self._record_action(f"{request.audit_message} | 已发送")
         else:
-            self.last_event = f"{request.plugin_id} · 已取消 {request.key}"
+            self.last_event = f"{request.plugin_id} · 已取消 {action_label}"
             self._record_action(f"{request.audit_message} | 已取消或未完成")
 
     def _record_action(self, event: str) -> None:

@@ -77,6 +77,18 @@ plugins:
 - `when always` 或 `when <plugin>.<metric> <op> <number>`，可用 `and` 连接
 - `repeat <次数>` 或 `repeat forever`
 - `press <按键> [hold <时间>]`
+- `key_down <按键>` / `key_up <按键>`
+- `move <x> <y>`（目标窗口客户区相对坐标）
+- `mouse_down <button> <x> <y>` / `mouse_up <button> <x> <y>`
+- `wheel <delta> <x> <y>` / `hwheel <delta> <x> <y>`
 - `wait <时间>`
 
 不要为了增加脚本功能而使用 `eval()`、`exec()`、Shell 或动态 Python。新语法必须进入解析器、产生明确数据结构，并有错误行号和单元测试。
+
+## 键鼠录制与回放
+
+`recording.py` 使用 Windows 低级键盘/鼠标钩子捕获物理输入，并明确丢弃带 injected 标记的事件。只有选定目标窗口处于前台时才会记录；鼠标移动最短每 20ms 采样一次，坐标转换为客户区相对坐标。F10 是录制会话的停止键，不写入结果。单次 5000 个事件上限用于避免生成无法编辑或执行的超大脚本。
+
+录制结果必须先转换成上述受限 DSL，再由 `AutoKeyPlugin` 和宿主执行器回放。录制器不得直接回放，插件也不得绕过 `ActionRequest` 调用输入 API。宿主在停止、失焦和异常时必须同时释放键盘键和鼠标键。
+
+不要加入以规避反作弊、风控或自动化检测为目的的随机延迟、轨迹噪声、驱动伪装或注入标记隐藏。测试系统若需要时间容差，应以明确命名、可复现种子和测试配置实现，不能声称其能让合成输入等同物理输入。

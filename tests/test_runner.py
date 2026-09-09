@@ -1,6 +1,7 @@
 from dataclasses import replace
 from pathlib import Path
 import threading
+from types import SimpleNamespace
 
 from game_assist.config import load_config
 from game_assist.plugins import ActionRequest
@@ -80,3 +81,30 @@ def test_completed_action_is_reported_to_owning_plugin(monkeypatch, tmp_path: Pa
     assert keyboard.taps == ["5"]
     assert plugin.completed == 1
     assert runner.last_event == "test success"
+
+
+def test_mouse_action_uses_current_client_origin(monkeypatch, tmp_path: Path) -> None:
+    class FakeInput(FakeKeyboard):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.actions: list[tuple[str, tuple[int, int] | None]] = []
+
+        def perform(self, action_type: str, **kwargs) -> bool:
+            self.actions.append((action_type, kwargs["client_origin"]))
+            return True
+
+    config = load_config("config/profile.example.yaml")
+    executor = FakeInput()
+    plugin = FakePlugin()
+    runner = AutomationRunner(config, keyboard=executor, plugins=[plugin])  # type: ignore[arg-type,list-item]
+    monkeypatch.setattr("game_assist.runner.ACTION_LOG_PATH", tmp_path / "actions.log")
+    monkeypatch.setattr("game_assist.runner.client_rect", lambda hwnd: SimpleNamespace(left=100, top=200))
+    request = ActionRequest(
+        "test_plugin", 1, "mouse", "", 0, "mouse audit", "mouse success",
+        action_type="mouse_move", x=12, y=34,
+    )
+
+    runner._execute_action(request, hwnd=99)
+
+    assert executor.actions == [("mouse_move", (100, 200))]
+    assert plugin.completed == 1
