@@ -36,6 +36,7 @@
 - [x] **单元测试**：已覆盖水平红色血条的识别，以及配置保存后可重新加载。
 - [x] **Git 忽略规则**：忽略本机 `profile.yaml`、调试截图、虚拟环境和 Python 生成文件。
 - [x] **Windows GitHub Actions**：在 push、PR 或手动触发时运行 `pytest`、使用 Nuitka 打包，并上传 `game-assist.exe` 产物。
+- [x] **Windows 一键运行/打包**：CMD/PowerShell 自举脚本自动创建虚拟环境、按依赖指纹更新安装并启动；本地和 CI 均输出包含 EXE 与默认配置的 ZIP。
 - [x] **非交互式 Nuitka 构建修复**：允许 CI 下载并缓存 Dependency Walker，避免 GitHub Actions 因交互确认失败。
 
 ## 当前限制

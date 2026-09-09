@@ -15,7 +15,27 @@
 
 ## 安装与运行（Windows）
 
-需要 Python 3.11+：
+需要先安装 Python 3.11 或更高版本。推荐直接双击：
+
+```text
+run-windows.cmd
+```
+
+也可以在 PowerShell 中执行这一条命令：
+
+```powershell
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\run.ps1
+```
+
+脚本不需要管理员权限，也不会永久修改系统的执行策略。它会自动创建 `.venv`、检查 Python 版本、仅在 `pyproject.toml` 变化或首次运行时安装依赖、生成缺失的 `config/profile.yaml`，然后使用虚拟环境中的 Python 直接启动程序，无需执行 `Activate.ps1`。
+
+需要强制重装依赖时使用：
+
+```powershell
+.\run-windows.cmd -Reinstall
+```
+
+传统手工方式仍然可用：
 
 ```powershell
 py -m venv .venv
@@ -62,10 +82,14 @@ end
 
 ## 测试与打包
 
+在 Windows 本机双击 `build-windows.cmd`，或者运行：
+
 ```powershell
-pytest
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
 ```
 
-已提供 [Windows GitHub Actions 工作流](.github/workflows/windows.yml)：它在 `windows-latest` 运行测试、用 Nuitka 构建 `game-assist.exe`，并上传构建产物。
+脚本会自动准备环境、运行测试并使用 Nuitka 打包，最终生成 `dist/GameAssist-Windows.zip`。压缩包内包含 `game-assist.exe`、默认配置和快速说明，解压后直接运行 EXE 即可；使用 `-SkipTests` 可以跳过本地测试。
+
+已经提供 [Windows GitHub Actions 工作流](.github/workflows/windows.yml)：每次 push、PR 或手工触发都会在 `windows-latest` 测试并构建同样的 ZIP。在 GitHub 仓库的 **Actions → 对应运行 → Artifacts** 下载 `GameAssist-Windows-<commit>` 即可，不需要在自己的 Windows 电脑上安装 Python。
 
 下一步可在不改变执行器的前提下增加模板匹配、OCR 和 YOLO/ONNX 检测器；它们都只需输出统一的识别结果，规则层再决定动作。

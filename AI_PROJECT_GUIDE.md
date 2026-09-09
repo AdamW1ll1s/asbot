@@ -66,6 +66,8 @@ Game Assist 是一个 Windows 可见画面自动化宿主，用于自有程序�
 | `config/profile.example.yaml` | 可提交的示例配置和默认值 |
 | `tests/` | macOS/Linux 可运行的纯逻辑与模拟测试 |
 | `.github/workflows/windows.yml` | Windows 测试与 Nuitka 打包 |
+| `scripts/run.ps1` / `run-windows.cmd` | 无需激活 venv 的 Windows 自举与启动入口 |
+| `scripts/build.ps1` / `build-windows.cmd` | 本地测试、Nuitka 打包及 ZIP 组装入口 |
 
 运行产生的 `config/profile.yaml`、`debug/` 和 `logs/` 是本机数据，已经被 Git 忽略。
 
