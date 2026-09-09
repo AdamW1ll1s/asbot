@@ -16,6 +16,24 @@ capture:
   recognition_interval_ms: 500
   save_debug_frame: false
 
+# Each feature is an independent plugin. Disabling a plugin keeps its settings
+# but prevents it from processing frames or sending actions.
+plugins:
+  auto_heal:
+    enabled: true
+  auto_key:
+    enabled: false
+    script: |
+      # 启动后执行一次：按 1，等待 300ms，再按 2。
+      macro Example combo
+      trigger start
+      when always
+      repeat 1
+      press 1
+      wait 300ms
+      press 2 hold 80ms
+      end
+
 health_bar:
   # Left, top, width, height in client-area pixels at your selected UI scale.
   roi: [40, 45, 220, 18]

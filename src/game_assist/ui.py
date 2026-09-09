@@ -10,22 +10,26 @@ from tkinter import messagebox, ttk
 import cv2
 import numpy as np
 
-from .config import AppConfig, load_config, save_config
+from .config import AppConfig, PluginConfig, load_config, save_config
 from .hotkeys import GlobalHotkeys, HotkeyRegistrationError
 from .runner import ACTION_LOG_PATH, AutomationRunner
+from .plugins import PLUGIN_DESCRIPTORS
+from .plugins.ui_registry import PLUGIN_SETTINGS_PANELS
 from .windows import WindowsOnlyError, activate_window, find_window, list_visible_windows
 
 
 class GameAssistApp:
     """A small Windows control panel around the safe automation runner."""
 
-    BACKGROUND = "#0b1220"
-    PANEL = "#152238"
-    PANEL_ALT = "#1b2b45"
-    TEXT = "#edf4ff"
-    MUTED = "#9eafc7"
-    ACCENT = "#39d9a9"
-    DANGER = "#ff6b7a"
+    BACKGROUND = "#08111f"
+    PANEL = "#101d30"
+    PANEL_ALT = "#17263b"
+    BORDER = "#253750"
+    TEXT = "#f4f7fb"
+    MUTED = "#91a3ba"
+    ACCENT = "#55e6b2"
+    ACCENT_DARK = "#183d36"
+    DANGER = "#ff7185"
 
     def __init__(self, config_path: str | Path) -> None:
         self.config_path = Path(config_path)
@@ -40,24 +44,31 @@ class GameAssistApp:
         self.hotkeys = GlobalHotkeys(
             {
                 self.config.toggle_hotkey: lambda: self.runner.toggle(),
-                self.config.emergency_stop_hotkey: self.runner.stop,
+                self.config.emergency_stop_hotkey: lambda: self.runner.stop(),
             }
         )
         self.root = tk.Tk()
         self.root.title("Game Assist · 控制台")
-        self.root.geometry("860x650")
-        self.root.minsize(760, 560)
+        self.root.geometry("1040x760")
+        self.root.minsize(900, 680)
         self.root.configure(bg=self.BACKGROUND)
         self._configure_style()
 
         self.window_title = tk.StringVar(value=self.config.window.title_contains)
         self.process_id: int | None = self.config.window.process_id
+        self.selected_window_title: str | None = self.config.window.title_contains if self.process_id else None
         self.threshold = tk.StringVar(value=str(self.config.rules.heal_below_percent))
         self.heal_key = tk.StringVar(value=self.config.rules.heal_key)
         self.recognition_interval = tk.StringVar(value=str(self.config.recognition_interval_ms))
         self.save_debug = tk.BooleanVar(value=self.config.save_debug_frame)
+        self.auto_heal_enabled = tk.BooleanVar(value=self.config.plugin_enabled("auto_heal"))
         self.status = tk.StringVar(value="待命 · 请先选择目标窗口")
         self.window_count = tk.StringVar(value="尚未刷新")
+        self.hp_metric = tk.StringVar(value="--")
+        self.confidence_metric = tk.StringVar(value="--")
+        self.event_metric = tk.StringVar(value="尚未运行")
+        self.roi_text = tk.StringVar(value=self._format_roi())
+        self.color_text = tk.StringVar(value=self._format_color_ranges())
         self.preview_window: tk.Toplevel | None = None
         self.preview_canvas: tk.Canvas | None = None
         self.preview_photo: tk.PhotoImage | None = None
@@ -80,76 +91,199 @@ class GameAssistApp:
         style = ttk.Style(self.root)
         style.theme_use("clam")
         style.configure("TFrame", background=self.BACKGROUND)
-        style.configure("Panel.TFrame", background=self.PANEL)
+        style.configure("Panel.TFrame", background=self.PANEL, borderwidth=1, relief="solid")
+        style.configure("Page.TFrame", background=self.BACKGROUND)
         style.configure("TLabel", background=self.PANEL, foreground=self.TEXT, font=("Segoe UI", 10))
         style.configure("Muted.TLabel", background=self.PANEL, foreground=self.MUTED, font=("Segoe UI", 9))
-        style.configure("Title.TLabel", background=self.BACKGROUND, foreground=self.TEXT, font=("Segoe UI Semibold", 22))
+        style.configure("Title.TLabel", background=self.BACKGROUND, foreground=self.TEXT, font=("Segoe UI Semibold", 24))
         style.configure("Subtitle.TLabel", background=self.BACKGROUND, foreground=self.MUTED, font=("Segoe UI", 10))
-        style.configure("Accent.TButton", background=self.ACCENT, foreground="#06130f", font=("Segoe UI Semibold", 10), padding=(16, 9))
-        style.map("Accent.TButton", background=[("active", "#60e9bf")])
-        style.configure("Danger.TButton", background="#442333", foreground=self.TEXT, font=("Segoe UI Semibold", 10), padding=(16, 9))
-        style.map("Danger.TButton", background=[("active", "#623246")])
-        style.configure("Secondary.TButton", background=self.PANEL_ALT, foreground=self.TEXT, font=("Segoe UI", 10), padding=(12, 7))
-        style.map("Secondary.TButton", background=[("active", "#29405f")])
-        style.configure("Treeview", background=self.PANEL_ALT, fieldbackground=self.PANEL_ALT, foreground=self.TEXT, rowheight=28, borderwidth=0, font=("Segoe UI", 10))
+        style.configure("CardTitle.TLabel", background=self.PANEL, foreground=self.TEXT, font=("Segoe UI Semibold", 12))
+        style.configure("Metric.TLabel", background=self.PANEL, foreground=self.ACCENT, font=("Segoe UI Semibold", 20))
+        style.configure("Accent.TButton", background=self.ACCENT, foreground="#06130f", font=("Segoe UI Semibold", 10), padding=(18, 10), borderwidth=0)
+        style.map("Accent.TButton", background=[("active", "#78f0c6")])
+        style.configure("Danger.TButton", background="#472536", foreground=self.TEXT, font=("Segoe UI Semibold", 10), padding=(18, 10), borderwidth=0)
+        style.map("Danger.TButton", background=[("active", "#653047")])
+        style.configure("Secondary.TButton", background=self.PANEL_ALT, foreground=self.TEXT, font=("Segoe UI", 10), padding=(13, 8), borderwidth=0)
+        style.map("Secondary.TButton", background=[("active", "#243a57")])
+        style.configure("Treeview", background="#0c1828", fieldbackground="#0c1828", foreground=self.TEXT, rowheight=30, borderwidth=0, font=("Segoe UI", 10))
         style.configure("Treeview.Heading", background=self.PANEL, foreground=self.MUTED, relief="flat", font=("Segoe UI Semibold", 9))
-        style.map("Treeview", background=[("selected", "#28566a")])
+        style.map("Treeview", background=[("selected", self.ACCENT_DARK)], foreground=[("selected", self.TEXT)])
         style.configure("TEntry", fieldbackground="#0d1929", foreground=self.TEXT, insertcolor=self.TEXT, padding=7)
         style.configure("TCheckbutton", background=self.PANEL, foreground=self.TEXT, font=("Segoe UI", 10))
+        style.configure("TNotebook", background=self.BACKGROUND, borderwidth=0, tabmargins=0)
+        style.configure("TNotebook.Tab", background=self.BACKGROUND, foreground=self.MUTED, borderwidth=0, padding=(18, 10), font=("Segoe UI Semibold", 10))
+        style.map("TNotebook.Tab", background=[("selected", self.PANEL)], foreground=[("selected", self.ACCENT), ("active", self.TEXT)])
         style.configure("Mode.TRadiobutton", background=self.BACKGROUND, foreground=self.TEXT, font=("Segoe UI", 10))
         style.map("Mode.TRadiobutton", background=[("active", self.BACKGROUND)], foreground=[("active", self.ACCENT)])
 
     def _build(self) -> None:
-        shell = ttk.Frame(self.root, padding=26)
+        shell = ttk.Frame(self.root, padding=(24, 20, 24, 18))
         shell.pack(fill="both", expand=True)
-        ttk.Label(shell, text="Game Assist", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(shell, text="选择可见窗口，确认安全配置后再启动自动化。", style="Subtitle.TLabel").pack(anchor="w", pady=(2, 22))
+        header = ttk.Frame(shell)
+        header.pack(fill="x", pady=(0, 16))
+        titles = ttk.Frame(header)
+        titles.pack(side="left")
+        ttk.Label(titles, text="Game Assist", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(titles, text="视觉识别与安全动作编排", style="Subtitle.TLabel").pack(anchor="w", pady=(2, 0))
+        hotkeys = ttk.Label(
+            header,
+            text=f"{self.config.toggle_hotkey}  启停     {self.config.emergency_stop_hotkey}  紧急停止",
+            style="Subtitle.TLabel",
+        )
+        hotkeys.pack(side="right", anchor="s", pady=(0, 3))
 
-        status_card = ttk.Frame(shell, style="Panel.TFrame", padding=(18, 13))
-        status_card.pack(fill="x", pady=(0, 15))
-        ttk.Label(status_card, textvariable=self.status, font=("Segoe UI Semibold", 11)).pack(side="left")
-        ttk.Label(status_card, text=f"F8 启停  ·  {self.config.emergency_stop_hotkey} 紧急停止", style="Muted.TLabel").pack(side="right")
+        status_card = ttk.Frame(shell, style="Panel.TFrame", padding=(18, 12))
+        status_card.pack(fill="x", pady=(0, 14))
+        ttk.Label(status_card, text="●", foreground=self.ACCENT, font=("Segoe UI", 11)).pack(side="left")
+        ttk.Label(status_card, textvariable=self.status, font=("Segoe UI Semibold", 10)).pack(side="left", padx=(8, 0))
+        ttk.Label(
+            status_card,
+            text="仅向前台目标窗口发送输入",
+            style="Muted.TLabel",
+        ).pack(side="right")
 
-        picker = ttk.Frame(shell, style="Panel.TFrame", padding=18)
-        picker.pack(fill="both", expand=True)
-        picker.columnconfigure(0, weight=1)
-        picker.rowconfigure(2, weight=1)
-        ttk.Label(picker, text="目标窗口", font=("Segoe UI Semibold", 13)).grid(row=0, column=0, sticky="w")
-        ttk.Label(picker, textvariable=self.window_count, style="Muted.TLabel").grid(row=0, column=1, sticky="e", padx=(12, 0))
-        tools = ttk.Frame(picker, style="Panel.TFrame")
-        tools.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 10))
-        ttk.Button(tools, text="刷新窗口列表", style="Secondary.TButton", command=self.refresh_windows).pack(side="left")
-        ttk.Label(tools, text="选择一项后会填入下方的窗口标题。", style="Muted.TLabel").pack(side="left", padx=12)
-        self.window_tree = ttk.Treeview(picker, columns=("pid", "title"), show="headings", selectmode="browse", height=9)
-        self.window_tree.heading("pid", text="PID")
-        self.window_tree.heading("title", text="窗口标题")
-        self.window_tree.column("pid", width=100, stretch=False, anchor="center")
-        self.window_tree.column("title", width=620, stretch=True)
-        self.window_tree.grid(row=2, column=0, columnspan=2, sticky="nsew")
-        self.window_tree.bind("<<TreeviewSelect>>", self._select_window)
-
-        settings = ttk.Frame(shell, style="Panel.TFrame", padding=18)
-        settings.pack(fill="x", pady=(15, 0))
-        settings.columnconfigure(1, weight=1)
-        ttk.Label(settings, text="运行设置", font=("Segoe UI Semibold", 13)).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 12))
-        ttk.Label(settings, text="窗口标题", style="Muted.TLabel").grid(row=1, column=0, sticky="w")
-        ttk.Entry(settings, textvariable=self.window_title).grid(row=1, column=1, sticky="ew", padx=(8, 18))
-        ttk.Label(settings, text="治疗阈值 (%)", style="Muted.TLabel").grid(row=1, column=2, sticky="w")
-        ttk.Entry(settings, textvariable=self.threshold, width=7).grid(row=1, column=3, sticky="w", padx=(8, 0))
-        ttk.Label(settings, text="治疗按键", style="Muted.TLabel").grid(row=2, column=0, sticky="w", pady=(12, 0))
-        ttk.Entry(settings, textvariable=self.heal_key, width=8).grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(12, 0))
-        ttk.Label(settings, text="判断间隔 (ms)", style="Muted.TLabel").grid(row=2, column=2, sticky="w", pady=(12, 0))
-        ttk.Entry(settings, textvariable=self.recognition_interval, width=7).grid(row=2, column=3, sticky="w", padx=(8, 0), pady=(12, 0))
-        ttk.Checkbutton(settings, text="保存调试截图", variable=self.save_debug).grid(row=3, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        self.notebook = ttk.Notebook(shell)
+        self.notebook.pack(fill="both", expand=True)
+        self.control_tab = ttk.Frame(self.notebook, style="Page.TFrame", padding=(0, 14, 0, 0))
+        self.plugins_tab = ttk.Frame(self.notebook, style="Page.TFrame", padding=(0, 14, 0, 0))
+        self.logs_tab = ttk.Frame(self.notebook, style="Page.TFrame", padding=(0, 14, 0, 0))
+        self.notebook.add(self.control_tab, text="运行控制")
+        self.notebook.add(self.plugins_tab, text="功能插件")
+        self.notebook.add(self.logs_tab, text="运行日志")
+        self._build_control_tab()
+        self._build_plugins_tab()
+        self._build_logs_tab()
 
         actions = ttk.Frame(shell)
-        actions.pack(fill="x", pady=(18, 0))
+        actions.pack(fill="x", pady=(16, 0))
         ttk.Button(actions, text="保存配置", style="Secondary.TButton", command=self.save_settings).pack(side="left")
-        ttk.Button(actions, text="实时识别预览", style="Secondary.TButton", command=self.show_preview).pack(side="left", padx=(10, 0))
-        ttk.Button(actions, text="触发日志", style="Secondary.TButton", command=self.show_action_log).pack(side="left", padx=(10, 0))
+        ttk.Label(actions, text=f"配置：{self.config_path}", style="Subtitle.TLabel").pack(side="left", padx=(12, 0))
         ttk.Button(actions, text="停止", style="Danger.TButton", command=self._stop).pack(side="right")
         self.start_button = ttk.Button(actions, text="开始自动化", style="Accent.TButton", command=self._start)
         self.start_button.pack(side="right", padx=(0, 10))
+
+    def _build_control_tab(self) -> None:
+        self.control_tab.columnconfigure(0, weight=3)
+        self.control_tab.columnconfigure(1, weight=2)
+        self.control_tab.rowconfigure(0, weight=1)
+        picker = ttk.Frame(self.control_tab, style="Panel.TFrame", padding=18)
+        picker.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
+        picker.columnconfigure(0, weight=1)
+        picker.rowconfigure(2, weight=1)
+        ttk.Label(picker, text="目标窗口", style="CardTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(picker, textvariable=self.window_count, style="Muted.TLabel").grid(row=0, column=1, sticky="e")
+        tools = ttk.Frame(picker, style="Panel.TFrame")
+        tools.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 10))
+        ttk.Button(tools, text="刷新列表", style="Secondary.TButton", command=self.refresh_windows).pack(side="left")
+        ttk.Label(tools, text="选择需要识别和控制的窗口", style="Muted.TLabel").pack(side="left", padx=12)
+        self.window_tree = ttk.Treeview(picker, columns=("pid", "title"), show="headings", selectmode="browse", height=12)
+        self.window_tree.heading("pid", text="PID")
+        self.window_tree.heading("title", text="窗口标题")
+        self.window_tree.column("pid", width=82, stretch=False, anchor="center")
+        self.window_tree.column("title", width=480, stretch=True)
+        self.window_tree.grid(row=2, column=0, columnspan=2, sticky="nsew")
+        self.window_tree.bind("<<TreeviewSelect>>", self._select_window)
+
+        side = ttk.Frame(self.control_tab, style="Page.TFrame")
+        side.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
+        target = ttk.Frame(side, style="Panel.TFrame", padding=18)
+        target.pack(fill="x")
+        ttk.Label(target, text="当前目标", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Label(target, text="窗口标题", style="Muted.TLabel").pack(anchor="w", pady=(16, 5))
+        ttk.Entry(target, textvariable=self.window_title).pack(fill="x")
+        ttk.Label(target, text="手工修改标题时将自动取消旧 PID 绑定。", style="Muted.TLabel").pack(anchor="w", pady=(8, 0))
+
+        metrics = ttk.Frame(side, style="Panel.TFrame", padding=18)
+        metrics.pack(fill="both", expand=True, pady=(14, 0))
+        ttk.Label(metrics, text="实时状态", style="CardTitle.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(metrics, text="生命值", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(18, 0))
+        ttk.Label(metrics, text="置信度", style="Muted.TLabel").grid(row=1, column=1, sticky="w", padx=(28, 0), pady=(18, 0))
+        ttk.Label(metrics, textvariable=self.hp_metric, style="Metric.TLabel").grid(row=2, column=0, sticky="w")
+        ttk.Label(metrics, textvariable=self.confidence_metric, style="Metric.TLabel").grid(row=2, column=1, sticky="w", padx=(28, 0))
+        ttk.Label(metrics, text="最近事件", style="Muted.TLabel").grid(row=3, column=0, columnspan=2, sticky="w", pady=(22, 5))
+        ttk.Label(metrics, textvariable=self.event_metric, wraplength=300, justify="left").grid(row=4, column=0, columnspan=2, sticky="nw")
+
+    def _build_plugins_tab(self) -> None:
+        self.plugins_tab.columnconfigure(0, weight=1)
+        self.plugins_tab.columnconfigure(1, weight=3)
+        self.plugins_tab.rowconfigure(0, weight=1)
+
+        catalog = ttk.Frame(self.plugins_tab, style="Panel.TFrame", padding=16)
+        catalog.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
+        ttk.Label(catalog, text="已安装插件", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Label(catalog, text="每个插件独立完成识别与规则判断", style="Muted.TLabel", wraplength=220).pack(anchor="w", pady=(4, 12))
+        self.plugin_tree = ttk.Treeview(catalog, columns=("state",), show="tree headings", height=12, selectmode="browse")
+        self.plugin_tree.heading("#0", text="插件")
+        self.plugin_tree.heading("state", text="状态")
+        self.plugin_tree.column("#0", width=145)
+        self.plugin_tree.column("state", width=65, anchor="center")
+        self.plugin_tree.pack(fill="both", expand=True)
+        for descriptor in PLUGIN_DESCRIPTORS:
+            state = "启用" if self.config.plugin_enabled(descriptor.plugin_id) else "停用"
+            self.plugin_tree.insert("", "end", iid=descriptor.plugin_id, text=descriptor.name, values=(state,))
+        self.plugin_tree.selection_set("auto_heal")
+        self.plugin_tree.bind("<<TreeviewSelect>>", self._select_plugin)
+        ttk.Label(catalog, text="新增功能时，注册插件及其设置面板即可。", style="Muted.TLabel", wraplength=220).pack(anchor="w", pady=(12, 0))
+
+        self.plugin_panel_host = ttk.Frame(self.plugins_tab, style="Page.TFrame")
+        self.plugin_panel_host.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
+        self.plugin_panel_host.columnconfigure(0, weight=1)
+        self.plugin_panel_host.rowconfigure(0, weight=1)
+        self.plugin_panels = {
+            plugin_id: panel_factory(self.plugin_panel_host, self)
+            for plugin_id, panel_factory in PLUGIN_SETTINGS_PANELS.items()
+        }
+        for panel in self.plugin_panels.values():
+            panel.grid(row=0, column=0, sticky="nsew")
+            panel.grid_remove()
+        self._select_plugin()
+
+    def _select_plugin(self, _: object | None = None) -> None:
+        selected = self.plugin_tree.selection()
+        plugin_id = selected[0] if selected else "auto_heal"
+        for current_id, panel in self.plugin_panels.items():
+            if current_id == plugin_id:
+                panel.grid()
+            else:
+                panel.grid_remove()
+
+    def _refresh_plugin_catalog(self) -> None:
+        if not hasattr(self, "plugin_tree") or not hasattr(self, "plugin_panels"):
+            return
+        for plugin_id, panel in self.plugin_panels.items():
+            enabled = panel.is_enabled()
+            if self.plugin_tree.exists(plugin_id):
+                self.plugin_tree.set(plugin_id, "state", "启用" if enabled else "停用")
+
+    def _build_logs_tab(self) -> None:
+        card = ttk.Frame(self.logs_tab, style="Panel.TFrame", padding=18)
+        card.pack(fill="both", expand=True)
+        ttk.Label(card, text="动作审计", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Label(card, text=f"最近 200 条 · {ACTION_LOG_PATH.resolve()}", style="Muted.TLabel").pack(anchor="w", pady=(4, 12))
+        log_frame = ttk.Frame(card, style="Panel.TFrame")
+        log_frame.pack(fill="both", expand=True)
+        self.action_log_text = tk.Text(log_frame, bg="#07101c", fg=self.TEXT, insertbackground=self.TEXT, wrap="none", font=("Consolas", 10), relief="flat", padx=12, pady=12)
+        vertical = ttk.Scrollbar(log_frame, orient="vertical", command=self.action_log_text.yview)
+        horizontal = ttk.Scrollbar(log_frame, orient="horizontal", command=self.action_log_text.xview)
+        self.action_log_text.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set, state="disabled")
+        self.action_log_text.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
+        log_frame.columnconfigure(0, weight=1)
+        log_frame.rowconfigure(0, weight=1)
+
+    def _format_roi(self) -> str:
+        x, y, width, height = self.config.health_bar.roi
+        return f"X {x}   Y {y}   宽 {width}   高 {height}"
+
+    def _format_color_ranges(self) -> str:
+        primary = f"{self.config.health_bar.hsv_lower} → {self.config.health_bar.hsv_upper}"
+        return primary if not self.config.health_bar.hsv_ranges else f"{primary}  + {len(self.config.health_bar.hsv_ranges)} 个附加色段"
+
+    def _refresh_rule_table(self) -> None:
+        panel = getattr(self, "plugin_panels", {}).get("auto_heal")
+        if panel is not None:
+            panel.refresh()
 
     def refresh_windows(self) -> None:
         for item in self.window_tree.get_children():
@@ -164,7 +298,8 @@ class GameAssistApp:
         if selected:
             values = self.window_tree.item(selected[0], "values")
             self.process_id = int(values[0])
-            self.window_title.set(str(values[1]))
+            self.selected_window_title = str(values[1])
+            self.window_title.set(self.selected_window_title)
 
     def _updated_config(self) -> AppConfig:
         title = self.window_title.get().strip()
@@ -179,12 +314,18 @@ class GameAssistApp:
         recognition_interval = int(self.recognition_interval.get())
         if recognition_interval < 50:
             raise ValueError("判断间隔不能小于 50 毫秒")
+        process_id = self.process_id if title == self.selected_window_title else None
+        existing_plugins = {plugin.plugin_id: plugin for plugin in self.config.plugins}
+        for plugin_id, panel in self.plugin_panels.items():
+            existing_plugins[plugin_id] = panel.plugin_config(existing_plugins.get(plugin_id))
+        plugins = tuple(existing_plugins.values())
         return replace(
             self.config,
-            window=replace(self.config.window, title_contains=title, process_id=self.process_id),
+            window=replace(self.config.window, title_contains=title, process_id=process_id),
             recognition_interval_ms=recognition_interval,
             save_debug_frame=self.save_debug.get(),
             rules=replace(self.config.rules, heal_below_percent=threshold, heal_key=key),
+            plugins=plugins,
         )
 
     def save_settings(self) -> bool:
@@ -194,6 +335,10 @@ class GameAssistApp:
         except (OSError, ValueError) as error:
             messagebox.showerror("无法保存配置", str(error), parent=self.root)
             return False
+        self.roi_text.set(self._format_roi())
+        self.color_text.set(self._format_color_ranges())
+        self._refresh_rule_table()
+        self._refresh_plugin_catalog()
         self.status.set(f"配置已保存 · {self.config_path}")
         return True
 
@@ -208,6 +353,11 @@ class GameAssistApp:
         if hwnd is None:
             messagebox.showerror("无法启动", "找不到已选择的目标窗口，请刷新窗口列表后重新选择。", parent=self.root)
             return
+        if not any(self.config.plugin_enabled(descriptor.plugin_id) for descriptor in PLUGIN_DESCRIPTORS):
+            messagebox.showwarning("没有启用插件", "请先在“功能插件”中启用至少一个插件。", parent=self.root)
+            return
+        if self.preview_window is not None:
+            self._close_preview()
         activated = not self.config.window.require_foreground or activate_window(hwnd)
         self.runner = AutomationRunner(self.config)
         self.runner.start()
@@ -218,7 +368,9 @@ class GameAssistApp:
 
     def _stop(self) -> None:
         self.runner.stop()
+        self.runner.last_event = "已由用户停止"
         self.status.set("已停止 · 所有已按下按键已释放")
+        self.event_metric.set("已由用户停止")
         self.start_button.configure(text="开始自动化")
 
     def _refresh_status(self) -> None:
@@ -232,6 +384,8 @@ class GameAssistApp:
                         f"HP {hp:.1f}% {relation} 阈值 {self.config.rules.heal_below_percent:.1f}%"
                         f" · 置信度 {confidence:.2f}"
                     )
+                    self.hp_metric.set(f"{hp:.1f}%")
+                    self.confidence_metric.set(f"{confidence:.2f}")
             else:
                 self.start_button.configure(text="运行中")
             if not self.runner.preview_only and self.runner.paused_for_focus:
@@ -243,61 +397,27 @@ class GameAssistApp:
                     f"运行中 · HP {hp:.1f}% {relation} 阈值 {self.config.rules.heal_below_percent:.1f}%"
                     f" · 置信度 {confidence:.2f} · {self.runner.last_event}"
                 )
+                self.hp_metric.set(f"{hp:.1f}%")
+                self.confidence_metric.set(f"{confidence:.2f}")
+                self.event_metric.set(self.runner.last_event)
         else:
             self.start_button.configure(text="开始自动化")
+            if self.runner.last_event.startswith("运行失败"):
+                self.status.set(self.runner.last_event)
+            elif self.runner.last_event == "已停止":
+                self.status.set("已停止 · 所有已按下按键已释放")
+            if self.runner.last_event not in ("Waiting", "等待首次识别"):
+                self.event_metric.set(self.runner.last_event)
         self._refresh_preview()
         self._refresh_action_log()
         self.root.after(250, self._refresh_status)
 
     def show_action_log(self) -> None:
-        if self.action_log_window is not None and self.action_log_window.winfo_exists():
-            self.action_log_window.deiconify()
-            self.action_log_window.lift()
-            return
-        window = tk.Toplevel(self.root)
-        window.title("Game Assist · 触发按键日志")
-        window.geometry("900x380")
-        window.minsize(680, 280)
-        window.configure(bg=self.BACKGROUND)
-        ttk.Label(
-            window,
-            text="只有 HP 严格小于阈值、置信度达标、连续帧达标且冷却结束时才会触发。",
-            style="Subtitle.TLabel",
-        ).pack(anchor="w", padx=16, pady=(14, 4))
-        ttk.Label(
-            window,
-            text=f"日志文件：{ACTION_LOG_PATH.resolve()}",
-            style="Subtitle.TLabel",
-        ).pack(anchor="w", padx=16, pady=(0, 10))
-        log_frame = ttk.Frame(window)
-        log_frame.pack(fill="both", expand=True, padx=16, pady=(0, 16))
-        log_frame.columnconfigure(0, weight=1)
-        log_frame.rowconfigure(0, weight=1)
-        text = tk.Text(
-            log_frame,
-            bg="#07101c",
-            fg=self.TEXT,
-            insertbackground=self.TEXT,
-            wrap="none",
-            font=("Consolas", 10),
-            relief="flat",
-            padx=10,
-            pady=10,
-        )
-        vertical = ttk.Scrollbar(log_frame, orient="vertical", command=text.yview)
-        horizontal = ttk.Scrollbar(log_frame, orient="horizontal", command=text.xview)
-        text.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set, state="disabled")
-        text.grid(row=0, column=0, sticky="nsew")
-        vertical.grid(row=0, column=1, sticky="ns")
-        horizontal.grid(row=1, column=0, sticky="ew")
-        self.action_log_window = window
-        self.action_log_text = text
-        self.action_log_signature = None
+        self.notebook.select(self.logs_tab)
         self._refresh_action_log()
-        window.protocol("WM_DELETE_WINDOW", self._close_action_log)
 
     def _refresh_action_log(self) -> None:
-        if self.action_log_window is None or not self.action_log_window.winfo_exists() or self.action_log_text is None:
+        if self.action_log_text is None or not self.action_log_text.winfo_exists():
             return
         try:
             stat = ACTION_LOG_PATH.stat()
@@ -322,10 +442,7 @@ class GameAssistApp:
         self.action_log_signature = signature
 
     def _close_action_log(self) -> None:
-        if self.action_log_window is not None:
-            self.action_log_window.destroy()
         self.action_log_window = None
-        self.action_log_text = None
         self.action_log_signature = None
 
     def show_preview(self) -> None:
@@ -342,7 +459,14 @@ class GameAssistApp:
         # so it must never emit input into the wrong foreground application.
         if self.runner.running:
             self.runner.stop()
-        self.runner = AutomationRunner(self.config, preview_only=True)
+        preview_plugins = tuple(
+            replace(plugin, enabled=True) if plugin.plugin_id == "auto_heal" else plugin
+            for plugin in self.config.plugins
+        )
+        if not any(plugin.plugin_id == "auto_heal" for plugin in preview_plugins):
+            preview_plugins = (*preview_plugins, PluginConfig("auto_heal", True))
+        preview_config = replace(self.config, plugins=preview_plugins)
+        self.runner = AutomationRunner(preview_config, preview_only=True)
         self.runner.start()
         self.status.set("校准预览中 · 不会发送任何按键")
         self.preview_zoom = 1.0
@@ -471,7 +595,8 @@ class GameAssistApp:
             return
         roi = (x1, y1, x2 - x1, y2 - y1)
         self.config = replace(self.config, health_bar=replace(self.config.health_bar, roi=roi))
-        self.runner.update_health_bar(self.config.health_bar)
+        self.runner.update_config(replace(self.runner.config, health_bar=self.config.health_bar))
+        self.roi_text.set(self._format_roi())
         self.preview_mode.set("color")
         self.preview_help.set(f"识别区域 {roi} 已设置。现在请单击血条中有颜色的填充部分。")
         self.status.set(f"已框选 ROI {roi}；点击“保存配置”生效")
@@ -510,10 +635,11 @@ class GameAssistApp:
                 self.config.health_bar,
                 hsv_lower=lower,
                 hsv_upper=upper,
-                hsv_ranges=hsv_ranges if len(hsv_ranges) > 1 else (),
+                hsv_ranges=hsv_ranges[1:],
             ),
         )
-        self.runner.update_health_bar(self.config.health_bar)
+        self.runner.update_config(replace(self.runner.config, health_bar=self.config.health_bar))
+        self.color_text.set(self._format_color_ranges())
         self.preview_help.set(f"已吸取颜色 HSV {(hue, saturation, value)}。观察置信度，满意后点击主界面的“保存配置”。")
         self.status.set(f"已取色 HSV {(hue, saturation, value)}；点击“保存配置”生效")
 

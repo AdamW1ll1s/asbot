@@ -8,8 +8,30 @@ import os
 
 if os.name == "nt":
     user32 = ctypes.WinDLL("user32", use_last_error=True)
+    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows.argtypes = (WNDENUMPROC, wintypes.LPARAM)
+    user32.EnumWindows.restype = wintypes.BOOL
+    user32.IsWindowVisible.argtypes = (wintypes.HWND,)
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.GetWindowTextLengthW.argtypes = (wintypes.HWND,)
+    user32.GetWindowTextLengthW.restype = ctypes.c_int
+    user32.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+    user32.GetWindowTextW.restype = ctypes.c_int
+    user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.GetClientRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+    user32.GetClientRect.restype = wintypes.BOOL
+    user32.ClientToScreen.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.POINT))
+    user32.ClientToScreen.restype = wintypes.BOOL
+    user32.GetForegroundWindow.argtypes = ()
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
+    user32.ShowWindow.restype = wintypes.BOOL
+    user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+    user32.SetForegroundWindow.restype = wintypes.BOOL
 else:
     user32 = None
+    WNDENUMPROC = None
 
 
 @dataclass(frozen=True)
@@ -41,7 +63,6 @@ def _require_windows() -> None:
 def find_window(title_contains: str, process_id: int | None = None) -> int | None:
     _require_windows()
     matches: list[int] = []
-    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
     def callback(hwnd: int, _: int) -> bool:
         if not user32.IsWindowVisible(hwnd):
@@ -60,7 +81,7 @@ def find_window(title_contains: str, process_id: int | None = None) -> int | Non
             return False
         return True
 
-    user32.EnumWindows(callback_type(callback), 0)
+    user32.EnumWindows(WNDENUMPROC(callback), 0)
     return matches[0] if matches else None
 
 
@@ -68,7 +89,6 @@ def list_visible_windows() -> list[VisibleWindow]:
     """Return titled, visible top-level windows for the desktop picker."""
     _require_windows()
     windows: list[VisibleWindow] = []
-    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
     def callback(hwnd: int, _: int) -> bool:
         if not user32.IsWindowVisible(hwnd):
@@ -83,7 +103,7 @@ def list_visible_windows() -> list[VisibleWindow]:
         windows.append(VisibleWindow(hwnd=hwnd, title=title.value, process_id=process_id.value))
         return True
 
-    user32.EnumWindows(callback_type(callback), 0)
+    user32.EnumWindows(WNDENUMPROC(callback), 0)
     return sorted(windows, key=lambda item: item.title.casefold())
 
 

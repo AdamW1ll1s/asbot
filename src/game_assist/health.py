@@ -30,7 +30,8 @@ class HealthBarDetector:
 
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
         mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
-        for lower, upper in self.config.hsv_ranges or ((self.config.hsv_lower, self.config.hsv_upper),):
+        ranges = ((self.config.hsv_lower, self.config.hsv_upper), *self.config.hsv_ranges)
+        for lower, upper in ranges:
             mask = cv2.bitwise_or(mask, cv2.inRange(hsv, np.array(lower, dtype=np.uint8), np.array(upper, dtype=np.uint8)))
         column_match = (mask > 0).mean(axis=0)
         filled = column_match >= self.config.column_coverage

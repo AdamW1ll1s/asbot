@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import replace
 import logging
 from pathlib import Path
 import threading
@@ -11,10 +10,9 @@ import cv2
 import mss
 import numpy as np
 
-from .config import AppConfig, HealthBarConfig
-from .health import HealthBarDetector
+from .config import AppConfig
 from .input import KeyboardExecutor
-from .rules import should_trigger_health_rule
+from .plugins import ActionRequest, FeaturePlugin, PluginContext, PluginResult, build_enabled_plugins
 from .windows import activate_window, client_rect, find_window, is_foreground
 
 
@@ -23,14 +21,20 @@ ACTION_LOG_PATH = Path("logs/actions.log")
 
 
 class AutomationRunner:
-    def __init__(self, config: AppConfig, preview_only: bool = False) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        preview_only: bool = False,
+        keyboard: KeyboardExecutor | None = None,
+        plugins: list[FeaturePlugin] | None = None,
+    ) -> None:
         self.config = config
         self.preview_only = preview_only
         self._cancel = threading.Event()
         self._thread: threading.Thread | None = None
-        self._keyboard = KeyboardExecutor()
-        self._detector = HealthBarDetector(config.health_bar)
-        self._last_action_at = 0.0
+        self._keyboard = keyboard or KeyboardExecutor()
+        self._plugins = build_enabled_plugins(config) if plugins is None else plugins
+        self.plugin_results: dict[str, PluginResult] = {}
         self._action_lock = threading.Lock()
         self._action_history: deque[str] = deque(maxlen=200)
         self._reading_streak = 0
@@ -52,6 +56,14 @@ class AutomationRunner:
         if self.running:
             return
         self._cancel.clear()
+        for plugin in self._plugins:
+            plugin.reset_session()
+        self.plugin_results.clear()
+        self._reading_streak = 0
+        self.last_reading = None
+        self.last_event = "等待首次识别"
+        self.paused_for_focus = False
+        self._last_recognition_at = 0.0
         self._thread = threading.Thread(target=self._run, name="automation-runner", daemon=True)
         self._thread.start()
         LOG.info("Automation started")
@@ -59,12 +71,17 @@ class AutomationRunner:
     def stop(self) -> None:
         self._cancel.set()
         self._keyboard.release_all()
+        if not self.last_event.startswith("运行失败"):
+            self.last_event = "已停止"
         LOG.info("Automation stopped")
 
-    def update_health_bar(self, config: HealthBarConfig) -> None:
-        """Apply calibration changes to a running preview."""
-        self.config = replace(self.config, health_bar=config)
-        self._detector = HealthBarDetector(config)
+    def update_config(self, config: AppConfig) -> None:
+        """Rebuild enabled plugins after live configuration changes."""
+        self.config = config
+        self._plugins = build_enabled_plugins(self.config)
+        for plugin in self._plugins:
+            plugin.reset_session()
+        self.plugin_results.clear()
         self._reading_streak = 0
         self.last_reading = None
         self._last_recognition_at = 0.0
@@ -80,6 +97,7 @@ class AutomationRunner:
         try:
             hwnd = find_window(self.config.window.title_contains, self.config.window.process_id)
             if hwnd is None:
+                self.last_event = "运行失败：找不到目标窗口"
                 LOG.error("No visible window contains title: %r", self.config.window.title_contains)
                 return
             # Clicking the control-panel Start button necessarily gives the
@@ -95,6 +113,8 @@ class AutomationRunner:
                             focus_paused = True
                             self.paused_for_focus = True
                             self._reading_streak = 0
+                            for plugin in self._plugins:
+                                plugin.reset_observations()
                             self._keyboard.release_all()
                             self.last_event = "已暂停 · 等待目标窗口回到前台"
                             LOG.warning("Target window lost focus; automation paused")
@@ -109,63 +129,76 @@ class AutomationRunner:
                     recognition_interval = self.config.recognition_interval_ms / 1000
                     until_next_recognition = recognition_interval - (now - self._last_recognition_at)
                     if until_next_recognition > 0:
+                        self._tick_timed_plugins(now)
                         self._cancel.wait(min(self.config.poll_interval_ms / 1000, until_next_recognition))
                         continue
                     rect = client_rect(hwnd)
                     if rect is None:
+                        self.last_event = "运行失败：目标客户区不可用"
                         LOG.warning("Target client area is unavailable; stopping")
                         return
                     client_bgr = self._capture(screen, rect.left, rect.top, rect.width, rect.height)
                     self._last_recognition_at = now
-                    reading = self._detector.detect(client_bgr)
-                    if reading is not None:
-                        self.last_reading = (reading.percent, reading.confidence)
-                        LOG.info("HP %.1f%% (confidence %.2f)", reading.percent, reading.confidence)
-                        self._reading_streak = self._reading_streak + 1 if reading.confidence >= self.config.health_bar.min_confidence else 0
-                        if not self.preview_only and self._reading_streak >= self.config.health_bar.consecutive_frames:
-                            self._apply_health_rule(reading.percent, reading.confidence)
+                    results: list[PluginResult] = []
+                    for plugin in self._plugins:
+                        context = PluginContext({result.plugin_id: result for result in results})
+                        results.append(plugin.process_frame(client_bgr, now, context))
+                    self.plugin_results = {result.plugin_id: result for result in results}
+                    health_result = self.plugin_results.get("auto_heal")
+                    if health_result and health_result.percent is not None and health_result.confidence is not None:
+                        self.last_reading = (health_result.percent, health_result.confidence)
+                        self._reading_streak = health_result.streak
+                        LOG.info("HP %.1f%% (confidence %.2f)", health_result.percent, health_result.confidence)
                     else:
+                        self.last_reading = None
                         self._reading_streak = 0
+                    if not self.preview_only:
+                        action = next((result.action for result in results if result.action is not None), None)
+                        if action is not None:
+                            self._execute_action(action)
                     with self._preview_lock:
-                        self._latest_preview = self._annotate_frame(client_bgr, reading)
+                        self._latest_preview = self._annotate_frame(client_bgr, results)
                         self._latest_raw = client_bgr.copy()
                         self._preview_revision += 1
-                    self._write_debug(client_bgr, reading)
-        except Exception:
+                    self._write_debug(client_bgr, results)
+        except Exception as error:
+            self.last_event = f"运行失败：{error}"
             LOG.exception("Automation failed safely")
         finally:
             self.paused_for_focus = False
             self._keyboard.release_all()
             self._cancel.set()
 
-    def _apply_health_rule(self, percent: float, confidence: float) -> None:
-        for rule in (self.config.rules, *self.config.additional_rules):
-            if not should_trigger_health_rule(
-                percent,
-                rule.heal_below_percent,
-                confidence,
-                self.config.health_bar.min_confidence,
-            ):
+    def _tick_timed_plugins(self, now: float) -> None:
+        """Advance timer-driven plugins without taking another screenshot."""
+        for plugin in self._plugins:
+            process_tick = getattr(plugin, "process_tick", None)
+            if process_tick is None:
                 continue
-            now = time.monotonic()
-            if now - self._last_action_at < rule.cooldown_ms / 1000:
-                continue
-            self._last_action_at = now
-            trigger = (
-                f"规则 {rule.name} | HP {percent:.1f}% < 阈值 {rule.heal_below_percent:.1f}%"
-                f" | 置信度 {confidence:.2f} | 按键 {rule.heal_key}"
-            )
-            self.last_event = f"准备触发 {rule.heal_key}"
-            LOG.warning("Triggering key: %s", trigger)
-            try:
-                completed = self._keyboard.tap(rule.heal_key, duration_ms=rule.hold_ms, cancelled=self._cancel)
-            except Exception as error:
-                self._record_action(f"{trigger} | 失败：{error}")
-                raise
-            outcome = "已发送" if completed else "已取消或未完成"
-            self.last_event = f"已触发 {rule.heal_key} · HP {percent:.1f}% < {rule.heal_below_percent:.1f}%"
-            self._record_action(f"{trigger} | {outcome}")
-            break
+            result = process_tick(now, PluginContext(dict(self.plugin_results)))
+            self.plugin_results[result.plugin_id] = result
+            if not self.preview_only and result.action is not None:
+                self._execute_action(result.action)
+                break
+
+    def _execute_action(self, request: ActionRequest) -> None:
+        self.last_event = f"{request.plugin_id} · 准备触发 {request.key}"
+        LOG.warning("Plugin action requested: %s", request.audit_message)
+        try:
+            completed = self._keyboard.tap(request.key, duration_ms=request.hold_ms, cancelled=self._cancel)
+        except Exception as error:
+            self._record_action(f"{request.audit_message} | 失败：{error}")
+            raise
+        if completed:
+            plugin = next((item for item in self._plugins if item.plugin_id == request.plugin_id), None)
+            if plugin is None:
+                raise RuntimeError(f"Action references missing plugin: {request.plugin_id}")
+            plugin.mark_action_completed(request, time.monotonic())
+            self.last_event = request.success_message
+            self._record_action(f"{request.audit_message} | 已发送")
+        else:
+            self.last_event = f"{request.plugin_id} · 已取消 {request.key}"
+            self._record_action(f"{request.audit_message} | 已取消或未完成")
 
     def _record_action(self, event: str) -> None:
         line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {event}"
@@ -179,11 +212,11 @@ class AutomationRunner:
         except OSError as error:
             LOG.warning("Could not write action log %s: %s", ACTION_LOG_PATH, error)
 
-    def _write_debug(self, frame: np.ndarray, reading: object) -> None:
+    def _write_debug(self, frame: np.ndarray, results: list[PluginResult]) -> None:
         if not self.config.save_debug_frame or time.monotonic() - self._last_debug_at < 1:
             return
         self._last_debug_at = time.monotonic()
-        output = self._annotate_frame(frame, reading)
+        output = self._annotate_frame(frame, results)
         Path("debug").mkdir(exist_ok=True)
         cv2.imwrite("debug/latest-frame.png", frame)
         cv2.imwrite("debug/latest-overlay.png", output)
@@ -198,14 +231,17 @@ class AutomationRunner:
         with self._preview_lock:
             return None if self._latest_raw is None else self._latest_raw.copy()
 
-    def _annotate_frame(self, frame: np.ndarray, reading: object) -> np.ndarray:
+    def _annotate_frame(self, frame: np.ndarray, results: list[PluginResult]) -> np.ndarray:
         output = frame.copy()
-        x, y, width, height = self.config.health_bar.roi
-        confidence = 0.0 if reading is None else reading.confidence
-        color = (0, 210, 90) if confidence >= self.config.health_bar.min_confidence else (0, 165, 255)
-        cv2.rectangle(output, (x, y), (x + width, y + height), color, 2)
-        cv2.putText(output, "Health ROI", (x, max(22, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
-        label = "HP unavailable" if reading is None else f"HP {reading.percent:.1f}% | confidence {reading.confidence:.2f} | frames {self._reading_streak}/{self.config.health_bar.consecutive_frames}"
+        for result in results:
+            for overlay in result.overlays:
+                x, y, width, height = overlay.roi
+                color = (0, 210, 90) if overlay.confidence >= overlay.min_confidence else (0, 165, 255)
+                cv2.rectangle(output, (x, y), (x + width, y + height), color, 2)
+                cv2.putText(output, overlay.label, (x, max(22, y - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+        label = "No feature plugins enabled"
+        if results:
+            label = "  |  ".join(result.summary for result in results)
         cv2.rectangle(output, (0, 0), (min(output.shape[1], 760), 44), (13, 25, 41), -1)
         cv2.putText(output, label, (12, 29), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (235, 244, 255), 2)
         if self.last_event != "Waiting":
